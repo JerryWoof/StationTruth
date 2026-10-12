@@ -13,6 +13,7 @@ from stationtruth import sitegen
 UTC = timezone.utc
 MODELS = ["ecmwf", "gfs", "ecmwf_bc", "gfs_bc", "blend"]
 VARS = {"t", "td", "wspd", "gust", "mslp", "wdir"}
+ST_VARS = {"t", "td", "wspd", "mslp"}
 META_KEYS = {
     "generated",
     "first_obs",
@@ -85,24 +86,70 @@ def test_full_build_schema(site):
         "lat",
         "lon",
         "elev_m",
+        "scale",
         "obs",
         "past",
         "future",
         "scores",
     }
-    assert set(st["obs"]) == {"time"} | VARS
-    assert 160 <= len(st["obs"]["time"]) <= 168
-    assert all(len(v) == len(st["obs"]["time"]) for v in st["obs"].values())
+    assert st["scale"] == 10
+    # no SLP reported at LKPR: an all-missing variable is left out
+    assert set(st["obs"]) == {"start", "step", "t", "td", "wspd"}
+    assert st["obs"]["step"] == 60
+    assert 160 <= len(st["obs"]["t"]) <= 168
+    assert len(st["obs"]["td"]) == len(st["obs"]["wspd"]) == len(st["obs"]["t"])
     assert set(st["past"]) == set(MODELS) == set(st["future"])
-    assert set(st["past"]["ecmwf"]["lead"]) <= {21, 24, 27}
+    assert st["past"]["ecmwf"]["step"] == 180
     fut = st["future"]["blend"]
-    assert fut["run"] == meta["latest_run"]["blend"] and len(fut["valid"]) == 25
+    assert fut["run"] == meta["latest_run"]["blend"] and len(fut["t"]) == 25
+    assert fut["start"] == _iso(datetime.strptime(fut["run"], "%Y%m%d%H"))
     assert set(st["scores"]) == {"7d", "30d"}
-    assert set(st["scores"]["7d"]["gfs"]) == VARS
-    # 1-decimal rounding
-    assert all(v is None or round(v, 1) == v for v in st["obs"]["t"] + st["past"]["gfs"]["t"])
+    assert set(st["scores"]["7d"]["gfs"]) == ST_VARS
+    n, bias, mae, rmse = st["scores"]["7d"]["gfs"]["t"]
+    assert n > 0 and bias < 0 < mae <= rmse
+    # integers (tenths, delta-coded); decoded values are plausible temperatures
+    assert all(v is None or isinstance(v, int) for v in st["obs"]["t"] + st["past"]["gfs"]["t"])
+    t = _decode(st["obs"]["t"])
+    assert all(v is None or -40 < v < 50 for v in t) and any(v is not None for v in t)
     raw = (out / "stations" / "LKPR.json").read_text()
     assert ": " not in raw and "NaN" not in raw
+
+
+def _iso(d):
+    return d.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _decode(deltas, scale=10):
+    """Mirror of the reader in site/app.js."""
+    out, acc = [], 0
+    for x in deltas:
+        if x is None:
+            out.append(None)
+        else:
+            acc += x
+            out.append(acc / scale)
+    return out
+
+
+def test_station_grid_roundtrip_and_gaps():
+    """Missing hours become nulls on a regular grid; decoding restores the values."""
+    t0 = 28_000_000  # minutes, a full hour
+    times = np.array([t0, t0 + 60, t0 + 120, t0 + 300, t0 + 360], dtype=np.int64)
+    S = {
+        "t": np.array([12.3, np.nan, -0.1, 5.04, 7.0]),
+        "td": np.array([1.0, 2.0, 3.0, 4.0, 5.0]),
+        "wspd": np.full(5, np.nan),
+        "mslp": np.array([1013.2, 1013.0, np.nan, 1012.5, 1012.4]),
+    }
+    g = sitegen._grid(times, S, slice(0, 5), 60)
+    assert g["start"] == sitegen.iso(t0) and g["step"] == 60
+    assert "wspd" not in g  # all-missing variable dropped
+    assert _decode(g["t"]) == [12.3, None, -0.1, None, None, 5.0, 7.0]
+    assert _decode(g["mslp"]) == [1013.2, 1013.0, None, None, None, 1012.5, 1012.4]
+    # step inferred from the spacing of the values
+    g3 = sitegen._grid(times[[0, 3]], {k: v[[0, 3]] for k, v in S.items()}, slice(0, 2))
+    assert g3["step"] == 300 and len(g3["td"]) == 2
+    assert sitegen._grid(times, {k: np.full(5, np.nan) for k in S}, slice(0, 5)) is None
 
 
 def test_latest_forecast_is_interpolated(site):
@@ -140,7 +187,7 @@ def test_obs_only(tmp_path):
     latest = _load(out / "latest.json")
     assert len(latest) == 3 and latest[0]["fc"] == {} and latest[0]["best"] is None
     st = _load(out / "stations" / "LKPR.json")
-    assert st["past"] == {} and st["future"] == {} and len(st["obs"]["time"]) > 40
+    assert st["past"] == {} and st["future"] == {} and len(st["obs"]["t"]) > 40
 
 
 def test_forecasts_without_obs(tmp_path):

@@ -2,8 +2,8 @@
 import {
   MODELS, MODEL, VARS, METARPARSE, isNum, esc, fmt, fmtSigned, fmtInt, median, parseTime, runLabel, ago, utcLabel,
   getJSON, loadMeta, progress, collectingHTML, setStatus, cssVar, modelColour, divColour, DIV_GRADIENT,
-  darkMQ, onThemeChange, axisStyle, observeWidth, seg, legendSwatch,
-} from './common.js';
+  darkMQ, onThemeChange, axisStyle, observeWidth, seg, legendSwatch, renderNav,
+} from './common.js?v=__BUILD__';
 
 const $ = (id) => document.getElementById(id);
 const MAP_VARS = ['t', 'td', 'wspd', 'mslp'];
@@ -32,7 +32,8 @@ const state = {
   scoreWin: '7d',
   hidden: new Set(JSON.parse(store.get('hidden', '[]') || '[]')),
 };
-const now = () => (state.meta?.generated ? parseTime(state.meta.generated) : new Date());
+// wall clock: the site may have been built a while ago, observations are older still
+const now = () => new Date();
 
 /* ------------------------------------------------------------------ map */
 const isTouch = matchMedia('(pointer: coarse)').matches;
@@ -43,7 +44,12 @@ const renderer = L.canvas({ padding: 0.5, tolerance: isTouch ? 10 : 4 });
 const map = L.map('map', {
   preferCanvas: true, renderer, zoomControl: false, worldCopyJump: true,
   minZoom: 2, maxZoom: 12, zoomSnap: 0.5, wheelPxPerZoomLevel: 90,
-}).setView([28, narrowMQ.matches ? 10 : -5], clamp(Math.floor(Math.log2(($('map').clientWidth || 1000) / 300) * 2) / 2, 2, 3.5));
+}).setView([28, narrowMQ.matches ? 10 : 8], initialZoom());
+// widest half-step zoom that still fits ~290° of longitude (the Americas through East Asia)
+function initialZoom() {
+  const w = $('map').clientWidth || 1000;
+  return clamp(Math.floor(Math.log2((w * 360) / (290 * 256)) * 2) / 2, 2, 3.5);
+}
 L.control.zoom({ position: 'topright' }).addTo(map);
 map.attributionControl.setPrefix(
   '<a href="https://leafletjs.com" rel="noopener">Leaflet</a> · Obs: <a href="https://aviationweather.gov" rel="noopener">aviationweather.gov</a> · Forecasts: Source <a href="https://www.ecmwf.int" rel="noopener">ECMWF</a> (<a href="https://creativecommons.org/licenses/by/4.0/" rel="noopener">CC BY 4.0</a>, modified), NOAA GFS · Not for operational use',
@@ -162,10 +168,12 @@ function renderLegend() {
   const el = $('legend');
   const withData = state.stations.filter((s) => valueOf(s) != null).length;
   if (state.mode === 'best') {
+    // counts = stations on the map won by each model (same rule as the dot colours)
     const counts = Object.fromEntries(MODELS.map((m) => [m.id, 0]));
-    for (const s of state.stations) if (s.best && s.best in counts) counts[s.best]++;
-    el.innerHTML = `<div class="cap">Lowest 7-day temperature RMSE at each station (≥ ${MIN_N} pairs)</div>
-      <div class="sw">${MODELS.map((m) => `<span><i style="background:var(--m-${m.id})"></i>${esc(m.label)} <b>${fmtInt(counts[m.id])}</b></span>`).join('')}</div>
+    let none = 0;
+    for (const s of state.stations) { if (s.best in counts) counts[s.best]++; else none++; }
+    el.innerHTML = `<div class="cap">Lowest 7-day temperature RMSE at each station (≥ ${MIN_N} pairs) · stations won</div>
+      <div class="sw">${MODELS.map((m) => `<span title="${esc(m.long)}: best at ${fmtInt(counts[m.id])} stations"><i style="background:var(--m-${m.id})"></i>${esc(m.label)} <b>${fmtInt(counts[m.id])}</b></span>`).join('')}${none ? `<span title="Fewer than ${MIN_N} verified pairs"><i style="background:var(--unk)"></i>Too few pairs <b>${fmtInt(none)}</b></span>` : ''}</div>
       ${withData ? '' : '<div class="cap" style="margin-top:6px">No station has enough history yet.</div>'}`;
     return;
   }
@@ -236,7 +244,7 @@ async function openStation(id, { fly = true, push = true } = {}) {
   const s = state.byId.get(id);
   state.selected = id;
   state.detail = null;
-  if (push && decodeURIComponent(location.hash.slice(1)).toUpperCase() !== id) history.pushState({ id }, '', `#${id}`);
+  if (push && hashId() !== id) history.pushState({ id }, '', `#${id}`);
   document.body.classList.add('panel-open');
   panel.hidden = false;
   if (s) {
@@ -255,7 +263,7 @@ async function openStation(id, { fly = true, push = true } = {}) {
   renderStation({ loading: true });
   const detail = await getJSON(`data/stations/${encodeURIComponent(id)}.json`, { optional: true }).catch(() => null);
   if (state.selected !== id) return;
-  state.detail = detail;
+  state.detail = decodeStation(detail);
   if (!s && !detail) {
     toast(`No recent data for ${id}`);
     closeStation({ push: false });
@@ -263,7 +271,7 @@ async function openStation(id, { fly = true, push = true } = {}) {
     return;
   }
   renderStation({});
-  if (!s && detail && fly) map.flyTo([detail.lat, detail.lon], 7, { duration: 0.8 });
+  if (!s && detail && fly && isNum(detail.lat) && isNum(detail.lon)) map.flyTo([detail.lat, detail.lon], 7, { duration: 0.8 });
 }
 
 function closeStation({ push = true } = {}) {
@@ -394,41 +402,81 @@ function stationScoresHTML(d) {
 }
 
 /* ------------------------------------------------------------------ chart */
-const toSec = (t) => Math.round(parseTime(t) / 1000);
+// Station files (docs/DATA.md, "stations/<ID>.json") hold regular time grids:
+// {start, step (minutes), <var>: delta-coded integers in 1/scale units, null = missing}.
+function decodeBlock(blk, scale) {
+  if (!blk || typeof blk.start !== 'string') return null;
+  const t0 = Math.round(Date.parse(blk.start) / 1000);
+  const step = (blk.step || 60) * 60;
+  const vals = {};
+  let n = 0;
+  for (const v of Object.keys(VARS)) {
+    if (!Array.isArray(blk[v])) continue;
+    let acc = 0;
+    vals[v] = blk[v].map((x) => (isNum(x) ? (acc += x) / scale : null));
+    n = Math.max(n, vals[v].length);
+  }
+  return { run: blk.run, step, ts: Array.from({ length: n }, (_, i) => t0 + i * step), vals };
+}
+const STAT_KEYS = ['n', 'bias', 'mae', 'rmse'];
+function decodeStation(d) {
+  if (!d) return null;
+  const scale = d.scale || 10;
+  const blocks = (o) => Object.fromEntries(Object.entries(o || {}).map(([m, b]) => [m, decodeBlock(b, scale)]).filter(([, b]) => b));
+  const scores = {};
+  for (const [w, byModel] of Object.entries(d.scores || {})) {
+    scores[w] = {};
+    for (const [m, byVar] of Object.entries(byModel || {})) {
+      scores[w][m] = Object.fromEntries(Object.entries(byVar || {}).map(([v, a]) => [v, Array.isArray(a) ? Object.fromEntries(STAT_KEYS.map((k, i) => [k, a[i]])) : a]));
+    }
+  }
+  return { ...d, obs: decodeBlock(d.obs, scale), past: blocks(d.past), future: blocks(d.future), scores };
+}
+
+const GAP = 2 * 3600; // break a line where data are missing for more than 2 h (or one model step)
 
 function drawChart(d) {
   const el = $('chart');
   if (!el || typeof uPlot === 'undefined') return;
   const v = state.chartVar;
   const V = VARS[v];
-  // union of all timestamps
+  // each source: its own (time, value) points; null where the grid has no value
+  const pts = (blk) => {
+    const a = blk?.vals?.[v];
+    if (!a) return [];
+    const out = [];
+    blk.ts.forEach((t, i) => { if (isNum(a[i])) out.push([t, a[i], blk.step]); });
+    return out;
+  };
+  const src = [{ m: null, kind: 'obs', p: pts(d.obs) }];
+  for (const m of MODELS) for (const kind of ['past', 'future']) src.push({ m: m.id, kind, p: pts(d[kind]?.[m.id]) });
+  // x = union of all times, plus a break point inside every gap
   const xs = new Set();
-  const obsT = (d.obs?.time || []).map(toSec);
-  obsT.forEach((t) => xs.add(t));
-  const src = [];
-  for (const m of MODELS) {
-    for (const kind of ['past', 'future']) {
-      const blk = d[kind]?.[m.id];
-      const ts = (blk?.valid || []).map(toSec);
-      ts.forEach((t) => xs.add(t));
-      src.push({ m: m.id, kind, ts, vals: blk?.[v] || [] });
-    }
-  }
+  const breaks = src.map((s) => {
+    const br = [];
+    s.p.forEach(([t, , step], i) => {
+      xs.add(t);
+      const prev = s.p[i - 1];
+      if (prev && t - prev[0] > Math.max(GAP, step)) { const mid = Math.round((prev[0] + t) / 2); br.push(mid); xs.add(mid); }
+    });
+    return br;
+  });
   const x = [...xs].sort((a, b) => a - b);
   const idx = new Map(x.map((t, i) => [t, i]));
-  const col = (ts, vals) => { const a = new Array(x.length).fill(null); ts.forEach((t, i) => { if (isNum(vals[i])) a[idx.get(t)] = vals[i]; }); return a; };
-  const data = [x, col(obsT, d.obs?.[v] || [])];
+  // undefined = no sample at this x (line continues), null = gap (line breaks)
+  const col = (s, br) => { const a = new Array(x.length).fill(undefined); s.p.forEach(([t, val]) => { a[idx.get(t)] = val; }); br.forEach((t) => { a[idx.get(t)] = null; }); return a; };
+  const data = [x, col(src[0], breaks[0])];
   const series = [{}, { label: 'Observed', stroke: cssVar('--obs'), width: 2.6, spanGaps: false, points: { show: false } }];
   const seriesModel = [null, null];
-  for (const s of src) {
-    data.push(col(s.ts, s.vals));
+  src.slice(1).forEach((s, k) => {
+    data.push(col(s, breaks[k + 1]));
     const raw = MODEL[s.m].raw;
     series.push({
       label: `${MODEL[s.m].label} ${s.kind}`, stroke: modelColour(s.m), width: raw ? 1.4 : 1.9,
-      dash: s.kind === 'future' ? [6, 4] : undefined, spanGaps: true, show: !state.hidden.has(s.m), points: { show: false },
+      dash: s.kind === 'future' ? [6, 4] : undefined, spanGaps: false, show: !state.hidden.has(s.m), points: { show: false },
     });
     seriesModel.push(s.m);
-  }
+  });
   if (!data.slice(1).some((a) => a.some(isNum))) {
     el.outerHTML = `<div class="empty-note">No ${esc(V.label.toLowerCase())} data at this station.</div>`;
     return;
@@ -572,13 +620,19 @@ document.addEventListener('keydown', (e) => {
 });
 
 /* ------------------------------------------------------------------ hash + misc */
-function applyHash() {
-  const id = decodeURIComponent(location.hash.slice(1)).trim().toUpperCase();
-  if (id && /^[A-Z0-9]{3,5}$/.test(id)) { if (id !== state.selected) openStation(id, { push: false }); }
+// #ICAO opens that station — on load and whenever the hash changes later (links, back/forward, typing in the URL bar)
+function hashId() {
+  let h = location.hash.slice(1);
+  try { h = decodeURIComponent(h); } catch { /* malformed escape */ }
+  return h.trim().toUpperCase();
+}
+function applyHash({ force = false } = {}) {
+  const id = hashId();
+  if (id && /^[A-Z0-9]{3,5}$/.test(id)) { if (force || id !== state.selected) openStation(id, { push: false }); }
   else if (state.selected) closeStation({ push: false });
 }
-window.addEventListener('popstate', applyHash);
-window.addEventListener('hashchange', applyHash);
+window.addEventListener('popstate', () => applyHash());
+window.addEventListener('hashchange', () => applyHash());
 
 let toastT;
 function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2600); }
@@ -594,6 +648,7 @@ onThemeChange(() => {
 
 /* ------------------------------------------------------------------ boot */
 async function boot() {
+  renderNav('map');
   readColours();
   if (narrowMQ.matches) infoToggle.setAttribute('aria-expanded', 'false');
   else infoToggle.setAttribute('aria-expanded', 'true');
@@ -618,7 +673,8 @@ async function boot() {
       $('headline-sub').textContent = '';
       $('collecting').innerHTML = '';
     }
-    applyHash();
+    // force: a hash change during loading opened the panel before the station list was known
+    applyHash({ force: true });
   } catch (err) {
     console.error(err);
     loading.classList.add('err');

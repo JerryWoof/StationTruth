@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 
 from . import correct, verify
-from .verify import FC_VARS, MODELS, NAT, Table, iso, iso_array, run_id
+from .verify import FC_VARS, MODELS, NAT, Table, iso, run_id
 
 log = logging.getLogger(__name__)
 
@@ -25,9 +25,11 @@ STATION_DAYS = 7
 PAST_LEAD = 24
 PAST_LEADS = (21, 27)
 MIN_N = 8
-STATION_BATCH = 500
-#: station JSON variables; obs "mslp" is the observed SLP
-OUT_VARS: tuple[str, ...] = ("t", "td", "wspd", "gust", "wdir", "mslp")
+#: station JSON variables (the ones the station panel charts and scores);
+#: obs "mslp" is the observed SLP
+OUT_VARS: tuple[str, ...] = ("t", "td", "wspd", "mslp")
+#: station series are integers in units of 1/SCALE (tenths)
+SCALE = 10
 
 
 # ------------------------------------------------------------------ helpers
@@ -218,14 +220,57 @@ def _past_rows(T: Table, active: np.ndarray, lo: int, hi: int) -> Table:
     return S
 
 
-def _series(S: Table, time_col: str, extra: tuple[str, ...] = ()) -> dict:
-    """Column lists for a sid-sorted table (converted once, sliced per station)."""
-    d = {time_col: iso_array(S[time_col])}
-    for c in extra:
-        d[c] = S[c].astype(int).tolist()
-    for v in OUT_VARS:
-        d[v] = _pylist(S[v])
-    return d
+def _tenths(a: np.ndarray) -> list:
+    """Float array -> delta-coded ints in 1/SCALE units, None for NaN.
+
+    The first number is the value itself, every later number the difference to
+    the previous non-null value (lossless; decode with a running sum that skips
+    nulls).
+    """
+    r = np.round(np.asarray(a, dtype=np.float64) * SCALE)
+    out: list = []
+    prev = 0
+    for x in r.tolist():
+        if x != x:
+            out.append(None)
+        else:
+            x = int(x)
+            out.append(x - prev)
+            prev = x
+    return out
+
+
+def _grid(times: np.ndarray, S: Table, rows: slice, step: int | None = None) -> dict | None:
+    """Regular time grid block ``{"start", "step", <var>: [...]}`` (docs/DATA.md).
+
+    ``times`` are minutes; slots without a value are ``null`` so charts can break
+    lines across gaps. Leading/trailing rows without any value are dropped, and so
+    are variables without any value.
+    ``step`` (minutes) defaults to the gcd of the time offsets (>= 60).
+    """
+    t = times[rows].astype(np.int64)
+    vals = {v: np.asarray(S[v][rows], dtype=np.float64) for v in OUT_VARS}
+    has = np.zeros(len(t), dtype=bool)
+    for a in vals.values():
+        has |= ~np.isnan(a)
+    if not has.any():
+        return None
+    t0 = int(t[has].min())
+    t1 = int(t[has].max())
+    if step is None:
+        step = int(np.gcd.reduce(t[has] - t0)) if t1 > t0 else 180
+        step = max(step, 60)
+    k = np.rint((t - t0) / step).astype(np.int64)
+    n = int((t1 - t0) // step) + 1
+    keep = (k >= 0) & (k < n)
+    out: dict = {"start": iso(t0), "step": step}
+    for v, a in vals.items():
+        if np.isnan(a[keep]).all():
+            continue  # a variable without any value is left out
+        g = np.full(n, np.nan)
+        g[k[keep]] = a[keep]
+        out[v] = _tenths(g)
+    return out
 
 
 def write_stations(
@@ -255,43 +300,44 @@ def write_stations(
         for v in OUT_VARS:
             H[v] = obs[verify.OBS_COL[v]][idx]
 
-        # numpy tables sorted by sid; converted to Python lists one batch at a time
-        groups: dict[str, tuple[str | None, Table, str, tuple[str, ...]]] = {}
-        groups["obs"] = (None, H, "time", ())
+        # numpy tables sorted by sid: (run id or None, table, time column, step)
+        groups: dict[str, tuple[str | None, Table, str, int | None]] = {}
+        groups["obs"] = (None, H, "time", 60)
         for m in MODELS:
             T = tables.get(m)
             if T is None or len(T["sid"]) == 0:
                 continue
-            groups[f"past:{m}"] = (None, _past_rows(T, active, lo, now), "valid", ("lead",))
+            groups[f"past:{m}"] = (None, _past_rows(T, active, lo, now), "valid", None)
             latest_run = int(T["run"].max())
             F = _subset(T, np.flatnonzero((T["run"] == latest_run) & active[T["sid"]]))
-            groups[f"future:{m}"] = (run_id(latest_run), _sorted_by(F, "sid", "lead"), "valid", ())
+            groups[f"future:{m}"] = (
+                run_id(latest_run),
+                _sorted_by(F, "sid", "lead"),
+                "valid",
+                None,
+            )
+        bounds = {g: _bounds(S["sid"], active_sids) for g, (_, S, _, _) in groups.items()}
 
-        for b0 in range(0, len(active_sids), STATION_BATCH):
-            batch = active_sids[b0 : b0 + STATION_BATCH]
-            sers = {}
-            for g, (rid, S, tcol, extra) in groups.items():
-                a0 = np.searchsorted(S["sid"], batch[0], side="left")
-                a1 = np.searchsorted(S["sid"], batch[-1], side="right")
-                part = {k: v[a0:a1] for k, v in S.items()}
-                sers[g] = (rid, _series(part, tcol, extra), _bounds(part["sid"], batch))
-            for i, s in enumerate(batch):
-                d = _station_doc(ds, int(s), station_sums)
-                for g, (rid, ser, (sa, sb)) in sers.items():
-                    a, b = sa[i], sb[i]
-                    if g == "obs":
-                        d["obs"] = {k: v[a:b] for k, v in ser.items()}
-                        continue
-                    if b <= a:
-                        continue
-                    kind, m = g.split(":")
-                    block = {k: v[a:b] for k, v in ser.items()}
-                    d[kind][m] = {"run": rid, **block} if rid else block
-                fname = _safe_name(d["id"])
-                if fname is None:
+        for i, s in enumerate(active_sids):
+            d = _station_doc(ds, int(s), station_sums)
+            for g, (rid, S, tcol, step) in groups.items():
+                sa, sb = bounds[g]
+                a, b = int(sa[i]), int(sb[i])
+                if b <= a:
                     continue
-                nbytes += _dump(d, sdir / f"{fname}.json")
-                written.add(f"{fname}.json")
+                block = _grid(S[tcol], S, slice(a, b), step)
+                if block is None:
+                    continue
+                if g == "obs":
+                    d["obs"] = block
+                    continue
+                kind, m = g.split(":")
+                d[kind][m] = {"run": rid, **block} if rid else block
+            fname = _safe_name(d["id"])
+            if fname is None:
+                continue
+            nbytes += _dump(d, sdir / f"{fname}.json")
+            written.add(f"{fname}.json")
     for p in sdir.glob("*.json"):  # stations that went quiet
         if p.name not in written:
             p.unlink()
@@ -307,6 +353,7 @@ def _station_doc(ds: verify.Dataset, s: int, station_sums: dict) -> dict:
         "lat": _r(row["lat"], 3),
         "lon": _r(row["lon"], 3),
         "elev_m": _r(row["elev_m"], 0),
+        "scale": SCALE,
         "obs": {},
         "past": {},
         "future": {},
@@ -314,7 +361,11 @@ def _station_doc(ds: verify.Dataset, s: int, station_sums: dict) -> dict:
     }
     for w, by_model in station_sums.items():
         d["scores"][w] = {
-            m: {v: verify.stat(S.n[s], S.s[s], S.sa[s], S.ss[s], nd=1) for v, S in by_var.items()}
+            m: {
+                v: list(verify.stat(S.n[s], S.s[s], S.sa[s], S.ss[s], nd=1).values())
+                for v, S in by_var.items()
+                if v in OUT_VARS
+            }
             for m, by_var in by_model.items()
         }
     return d

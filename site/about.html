@@ -15,7 +15,7 @@
 <meta property="og:site_name" content="StationTruth">
 <meta name="twitter:card" content="summary">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=__BUILD__">
 </head>
 <body class="doc">
 <a class="skip" href="#main">Skip to content</a>
@@ -30,7 +30,9 @@
   </a>
   <nav class="nav" aria-label="Pages">
     <a href="./">Map</a>
+    <a href="analysis.html">Analysis</a>
     <a href="scores.html">Scores</a>
+    <a href="tafs.html">TAFs</a>
     <a href="about.html" aria-current="page">About</a>
   </nav>
   <div class="top-actions">
@@ -54,6 +56,8 @@
     <li><a href="#matching">Matching</a></li>
     <li><a href="#scores">Scores</a></li>
     <li><a href="#correction">Bias correction</a></li>
+    <li><a href="#analysis">Phase 2: Analysis</a></li>
+    <li><a href="#tafs">TAF verification</a></li>
     <li><a href="#limits">Limitations</a></li>
     <li><a href="#licence">Licences &amp; credits</a></li>
   </ul>
@@ -75,7 +79,8 @@
       <dt>Stations</dt><dd id="f-st">–</dd>
       <dt>Verified pairs</dt><dd id="f-pairs">–</dd>
       <dt>Latest runs</dt><dd id="f-runs">–</dd>
-      <dt>Page generated</dt><dd id="f-gen">–</dd>
+      <dt>Site built</dt><dd id="f-gen">–</dd>
+      <dt>Latest observation</dt><dd id="f-last">–</dd>
     </dl>
   </div>
 
@@ -114,6 +119,17 @@
   </ul>
   <div class="callout">Example: over the last two weeks ECMWF's afternoon (12–17 UTC) temperature at an airport in a valley was on average +1.2 °C too warm at 0–24 h lead. Today's ECMWF forecast of 18.0 °C for 15 UTC becomes 16.8 °C in <code>ecmwf_bc</code>.</div>
 
+  <!-- BIAS-CORRECTION METHOD: placeholder for the lead to replace with the final description of the current method -->
+  <div class="callout placeholder" id="correction-method" data-placeholder="bias-correction-method">
+    <p><b>Method details — to be completed.</b> This paragraph will describe the current bias-correction method in full (inputs, training window, weighting and how it is kept free of look-ahead).</p>
+  </div>
+
+  <h2 id="analysis">Phase 2: Analysis</h2>
+  <p>The <a href="analysis.html">Analysis</a> page goes from points to a map: it combines the latest airport observations with the model forecasts to estimate the current weather everywhere on a regular grid, not only at the stations. Where airports are dense the analysis follows the observations closely; far from any station it falls back towards the model. It shows how the model's errors are organised in space — a cold valley, a too-windy coast — and is built only from data that were available at the time.</p>
+
+  <h2 id="tafs">TAF verification</h2>
+  <p>Airports also issue their own human-written forecasts, <abbr title="Terminal Aerodrome Forecast">TAFs</abbr>. The <a href="tafs.html">TAFs</a> page checks them against what the airport then reported — wind, visibility, cloud and weather — and puts them side by side with the global models at the same airports, so you can see where the forecaster's local knowledge beats the raw model and where it does not.</p>
+
   <h2 id="limits">Limitations</h2>
   <ul>
     <li><b>Point vs grid.</b> A 0.25° model cell (about 25 km) represents an area average; an airport thermometer measures one spot. Some “error” is simply that difference, especially on coasts, in mountains and around cities. It is still the error a user of the raw model at that place would see.</li>
@@ -139,8 +155,9 @@
 </main>
 
 <script type="module">
-  import { loadMeta, setStatus, collectingHTML, fmtInt, dateLabel, ago, runLabel, utcLabel } from './common.js';
+  import { loadMeta, setStatus, renderNav, collectingHTML, fmtInt, dateLabel, ago, runLabel, utcLabel } from './common.js?v=__BUILD__';
   const $ = (id) => document.getElementById(id);
+  renderNav('about');
   loadMeta().then((meta) => {
     setStatus(meta);
     $('collecting').innerHTML = collectingHTML(meta);
@@ -152,6 +169,7 @@
     const lr = meta.latest_run || {};
     $('f-runs').textContent = [lr.ecmwf && `ECMWF ${runLabel(lr.ecmwf)}`, lr.gfs && `GFS ${runLabel(lr.gfs)}`].filter(Boolean).join(' · ') || '–';
     $('f-gen').textContent = `${dateLabel(meta.generated)} ${utcLabel(meta.generated)} (${ago(meta.generated)})`;
+    if (meta.last_obs) $('f-last').textContent = `${dateLabel(meta.last_obs)} ${utcLabel(meta.last_obs)} (${ago(meta.last_obs)})`;
   }).catch((e) => console.error(e));
 </script>
 </body>

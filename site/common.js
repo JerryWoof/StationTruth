@@ -1,4 +1,6 @@
-// StationTruth — shared helpers for every page (map, scoreboard, about).
+// StationTruth — shared helpers for every page (map, analysis, scores, TAFs, about).
+// Pages import this as './common.js?v=__BUILD__' (the deploy replaces __BUILD__; unreplaced it is a harmless literal).
+// Every module on a page must use the same URL, or the browser loads common.js twice.
 
 export const REPO = 'https://github.com/JerryWoof/StationTruth';
 export const METARPARSE = 'https://jerrywoof.github.io/MetarParse/';
@@ -155,16 +157,80 @@ export function collectingHTML(meta, { always = false } = {}) {
   </div>`;
 }
 
+/* ------------------------------------------------------------------ header
+ * Every page shares the same top bar (see index.html for the markup):
+ *   <header class="topbar"> <a class="brand">…<p class="status" id="status">
+ *     <span class="live-dot"></span><span id="updated"></span><span class="sep">·</span><span id="count"></span></p></a>
+ *   <nav class="nav" aria-label="Pages"></nav> … </header>
+ *
+ * renderNav(active)  fills the topbar's <nav class="nav"> with PAGES (creating it
+ *                    after .brand when missing) and marks the page whose key is
+ *                    `active` ('map' | 'analysis' | 'scores' | 'tafs' | 'about')
+ *                    with aria-current="page". Keep a static copy of the links in
+ *                    the HTML as a no-JS fallback; this call just rewrites it.
+ * initHeader({ active, meta, extra })  renderNav(active) + setStatus(meta, extra)
+ *                    when meta is given (or call setStatus later, after loadMeta()).
+ * setStatus(meta, extra)  "Updated X min ago" = when the site was built
+ *                    (meta.generated); the tooltip adds the latest observation time
+ *                    (meta.last_obs). Re-renders itself every minute.
+ */
+export const PAGES = [
+  { key: 'map', href: './', label: 'Map' },
+  { key: 'analysis', href: 'analysis.html', label: 'Analysis' },
+  { key: 'scores', href: 'scores.html', label: 'Scores' },
+  { key: 'tafs', href: 'tafs.html', label: 'TAFs' },
+  { key: 'about', href: 'about.html', label: 'About' },
+];
+export function renderNav(active) {
+  const bar = document.querySelector('.topbar');
+  if (!bar) return null;
+  let nav = bar.querySelector('nav.nav');
+  if (!nav) {
+    nav = document.createElement('nav');
+    nav.className = 'nav';
+    nav.setAttribute('aria-label', 'Pages');
+    const brand = bar.querySelector('.brand');
+    if (brand) brand.after(nav); else bar.prepend(nav);
+  }
+  nav.innerHTML = PAGES.map((p) => `<a href="${p.href}"${p.key === active ? ' aria-current="page"' : ''}>${esc(p.label)}</a>`).join('');
+  return nav;
+}
+export function initHeader({ active, meta, extra } = {}) {
+  renderNav(active);
+  if (meta !== undefined) setStatus(meta, extra);
+}
+
+const BUILD_STALE_MS = 3 * 3600000; // site not rebuilt for 3 h: the hourly job is stuck
+const OBS_STALE_MS = 3 * 3600000; // newest observation 3 h older than the build: collection is stuck
+let statusArgs = null;
+let statusTimer = 0;
+function fullTime(d) { return d ? `${dateLabel(d)} ${utcLabel(d)}` : '–'; }
+
 export function setStatus(meta, extra = '') {
+  statusArgs = [meta, extra];
+  if (!statusTimer) statusTimer = setInterval(() => statusArgs && renderStatus(...statusArgs), 60000);
+  renderStatus(meta, extra);
+}
+function renderStatus(meta, extra) {
   const el = document.getElementById('updated');
   const st = document.getElementById('status');
   if (!el) return;
   if (!meta) { el.textContent = 'No data yet'; st?.classList.add('stale'); return; }
   const gen = parseTime(meta.generated);
-  const stale = gen && Date.now() - gen > 3 * 3600000;
-  el.textContent = `Updated ${ago(gen)}`;
-  el.title = gen ? gen.toISOString().replace('.000', '') : '';
-  st?.classList.toggle('stale', !!stale);
+  const obs = parseTime(meta.last_obs);
+  const now = Date.now();
+  const buildStale = !gen || now - gen > BUILD_STALE_MS;
+  const obsStale = !!(gen && obs && gen - obs > OBS_STALE_MS);
+  el.textContent = `Updated ${ago(gen, now)}${obsStale ? ' · obs delayed' : ''}`;
+  const tip = [
+    `Site built ${fullTime(gen)} (${ago(gen, now)})`,
+    obs ? `Latest obs ${fullTime(obs)} (${ago(obs, now)})` : 'No observations yet',
+  ];
+  if (buildStale) tip.push('The site has not been rebuilt for a while — data may be out of date.');
+  if (obsStale) tip.push('Observation collection is behind the site build.');
+  (st || el).title = tip.join('\n');
+  el.removeAttribute('title');
+  st?.classList.toggle('stale', buildStale || obsStale);
   const c = document.getElementById('count');
   if (c) c.textContent = extra || (meta.station_count ? `${fmtInt(meta.station_count)} stations` : '');
 }

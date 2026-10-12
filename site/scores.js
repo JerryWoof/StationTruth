@@ -1,8 +1,8 @@
 // StationTruth — scoreboard page
 import {
   MODELS, MODEL, VARS, isNum, esc, fmt, fmtSigned, fmtInt, fmtCompact,
-  getJSON, loadMeta, collectingHTML, setStatus, cssVar, modelColour, onThemeChange, axisStyle, observeWidth, seg, legendSwatch,
-} from './common.js';
+  getJSON, loadMeta, collectingHTML, setStatus, cssVar, modelColour, onThemeChange, axisStyle, observeWidth, seg, legendSwatch, renderNav,
+} from './common.js?v=__BUILD__';
 
 const $ = (id) => document.getElementById(id);
 const LEAD_MIN_N = 30; // leads with fewer pairs are left out of the charts
@@ -212,6 +212,7 @@ regionSel.addEventListener('change', () => { state.region = regionSel.value; wri
 onThemeChange(() => render());
 
 async function boot() {
+  renderNav('scores');
   renderKey();
   try {
     state.meta = await loadMeta();
