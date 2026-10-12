@@ -1,0 +1,68 @@
+name: Publish site
+
+on:
+  schedule:
+    - cron: "40 * * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "src/**"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: pip install -e .
+      # Keep the downloaded release assets between runs; sync only fetches
+      # files that are new or changed (tracked in data/.sync.json).
+      - name: Restore data cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: data-${{ github.run_id }}
+          restore-keys: data-
+      - name: Sync data
+        run: stationtruth sync --days 35 --to data --prune
+      - name: Save data cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: data
+          key: data-${{ github.run_id }}
+      - name: Build site data
+        run: stationtruth build-site --data-dir data --out site/data
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

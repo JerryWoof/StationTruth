@@ -1,0 +1,46 @@
+name: Backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "days of history (obs: Data API keeps ~2-4 weeks; ECMWF open data ~4 days)"
+        default: "7"
+      models:
+        description: "comma-separated models, empty for none"
+        default: "ecmwf,gfs"
+      obs:
+        description: "backfill observations too"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+# Shares the forecast lock so a backfill never races collect-fcst on the same run.
+concurrency:
+  group: collect-fcst
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: pip install -e .
+      - name: Backfill
+        run: >-
+          stationtruth backfill
+          --days "${{ inputs.days }}"
+          --models "${{ inputs.models }}"
+          ${{ !inputs.obs && '--no-obs' || '' }}
