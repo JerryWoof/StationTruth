@@ -162,11 +162,62 @@ def _circ_mean(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return out
 
 
+BLEND_MAX_AGE_H = 12
+BLEND_MAX_LEAD_H = 72
+
+
+def _rebase(T: Table, blend_runs: np.ndarray) -> Table:
+    """Re-key a corrected table onto blend runs.
+
+    For each blend run R the component is the latest run of T with
+    ``R - 12 h <= run <= R``; its rows with ``R <= valid <= run + 72 h`` are
+    returned with ``run = R`` and ``lead = valid - R``. One source run can feed
+    several blend runs (e.g. ECMWF 00Z for blend 00Z and 06Z).
+    """
+    order = np.argsort(T["run"], kind="stable")
+    run_sorted = T["run"][order]
+    runs = np.unique(run_sorted)
+    src_i = np.searchsorted(runs, blend_runs, side="right") - 1
+    parts: list[np.ndarray] = []
+    new_run: list[np.ndarray] = []
+    for R, i in zip(blend_runs.tolist(), src_i.tolist(), strict=True):
+        if i < 0 or R - int(runs[i]) > BLEND_MAX_AGE_H * 60:
+            continue
+        src = int(runs[i])
+        a = np.searchsorted(run_sorted, src, side="left")
+        b = np.searchsorted(run_sorted, src, side="right")
+        rows = order[a:b]
+        v = T["valid"][rows]
+        rows = rows[(v >= R) & (T["lead"][rows].astype(np.int32) <= BLEND_MAX_LEAD_H)]
+        parts.append(rows)
+        new_run.append(np.full(len(rows), R, dtype=np.int32))
+    rows = np.concatenate(parts) if parts else np.zeros(0, np.int64)
+    out = {k: v[rows] for k, v in T.items()}
+    out["run"] = np.concatenate(new_run) if new_run else np.zeros(0, np.int32)
+    out["lead"] = ((out["valid"].astype(np.int64) - out["run"]) // 60).astype(np.int16)
+    return out
+
+
 def blend_table(a: Table | None, b: Table | None) -> Table | None:
-    """Row-wise mean of two corrected tables on (sid, run, lead)."""
+    """Real-time blend of two corrected tables (``ecmwf_bc``, ``gfs_bc``).
+
+    Blend runs are the union of both models' run times. For blend run R each
+    component comes from that model's latest run <= R (at most 12 h older, valid
+    time still within its 72 h), matched on (station, valid); ``lead = valid - R``.
+    Values are the mean of the available components (circular mean for wdir),
+    falling back to the single available one. Uses no run later than R, and each
+    component's correction is itself look-ahead free, so the blend is too.
+    """
     tabs = [t for t in (a, b) if t is not None and len(t["sid"])]
     if not tabs:
         return None
+    blend_runs = np.unique(np.concatenate([t["run"] for t in tabs]))
+    tabs = [r for r in (_rebase(t, blend_runs) for t in tabs) if len(r["sid"])]
+    return _join_mean(tabs) if tabs else None
+
+
+def _join_mean(tabs: list[Table]) -> Table:
+    """Row-wise mean of one or two tables on (sid, run, lead)."""
 
     def key(t: Table) -> np.ndarray:
         return (

@@ -102,9 +102,21 @@ valid hour-of-day bucket (00–05, 06–11, 12–17, 18–23 UTC), the correctio
 the mean error over the **previous 14 days of verified pairs whose run time is
 earlier than the run being corrected** (no look-ahead). Applied only when at
 least 8 pairs exist; otherwise the raw forecast is kept. Corrected models are
-named `ecmwf_bc`, `gfs_bc`; `blend` is the mean of `ecmwf_bc` and `gfs_bc`
-(falls back to whichever exists). Corrected forecasts are verified exactly like
+named `ecmwf_bc`, `gfs_bc`. Corrected forecasts are verified exactly like
 raw ones, so the scoreboard shows whether correction actually helps.
+
+`blend` is built for every run time R of either model (the blend run is named
+by R). For each model, the component is that model's corrected forecast from
+its **latest run at or before R**, used only if that run is at most 12 h older
+than R and covers the valid time within 72 h of its own initialisation. The
+components are matched on station and valid time (so their leads differ when one
+run is older), `lead_h = valid − R` (0–72 h), and the blend is their mean
+(circular mean for `wdir`). Where only one component is available, the blend is
+that component. No run later than R is ever used and each component's
+correction is itself look-ahead free, so the blend is too.
+
+Note that `gust` is verified only when the observation reports a gust, so its
+scores describe a conditional (gusty-conditions) sample, not all hours.
 
 ## Site data (`site/data/`, generated, not committed)
 

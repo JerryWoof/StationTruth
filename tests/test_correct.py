@@ -133,3 +133,78 @@ def test_blend_mean_fallback_and_circular():
     assert b["wdir"][0] == pytest.approx(0, abs=1e-3) or b["wdir"][0] == pytest.approx(360)
     assert b["wdir"][1:] == pytest.approx([90, 180], abs=1e-3)
     assert correct.blend_table(None, None) is None
+
+
+def _runs_table(runs_h: list[int], value_of_run, leads=range(0, 73, 3)) -> dict:
+    """One station; t = value_of_run(run hour) + lead/100 so components are identifiable."""
+    sid, run, lead = [], [], []
+    for r in runs_h:
+        for ld in leads:
+            sid.append(0)
+            run.append(r * 60)
+            lead.append(ld)
+    run = np.array(run, np.int32)
+    lead = np.array(lead, np.int16)
+    T = {
+        "sid": np.array(sid, np.int32),
+        "run": run,
+        "lead": lead,
+        "valid": (run + lead.astype(np.int32) * 60).astype(np.int32),
+        "oi": np.full(len(run), -1, np.int32),
+        "t": np.array(
+            [value_of_run(r // 60) + ld / 100 for r, ld in zip(run, lead, strict=True)], np.float32
+        ),
+        "wdir": np.full(len(run), 90, np.float32),
+    }
+    for v in ("td", "wspd", "gust", "mslp"):
+        T[v] = np.full(len(run), np.nan, np.float32)
+    return T
+
+
+def _blend_rows(b, run_h):
+    m = b["run"] == run_h * 60
+    order = np.argsort(b["lead"][m])
+    return b["lead"][m][order], b["valid"][m][order], b["t"][m][order]
+
+
+def test_blend_uses_older_ecmwf_run_when_same_time_missing():
+    base = 1000  # hours
+    ec = _runs_table([base], lambda r: 10.0)  # ECMWF 00Z only
+    gf = _runs_table([base, base + 12], lambda r: 20.0 if r == base else 30.0)  # GFS 00Z + 12Z
+    b = correct.blend_table(ec, gf)
+    assert sorted(set((b["run"] // 60).tolist())) == [base, base + 12]
+    lead, valid, t = _blend_rows(b, base + 12)
+    assert lead.tolist() == list(range(0, 73, 3))  # lead = valid - R
+    assert (valid == (base + 12) * 60 + lead.astype(np.int32) * 60).all()
+    # valid <= ECMWF 00Z + 72 h (blend lead <= 60): mean of GFS 12Z (lead L) and ECMWF 00Z
+    # (lead L + 12); beyond that ECMWF no longer covers the valid time: GFS only
+    for L, x in zip(lead.tolist(), t.tolist(), strict=True):
+        gfs = 30.0 + L / 100
+        want = (gfs + 10.0 + (L + 12) / 100) / 2 if L <= 60 else gfs
+        assert x == pytest.approx(want, abs=1e-4), L
+    # same-time run present: plain mean, unchanged behaviour
+    lead, _, t = _blend_rows(b, base)
+    assert t.tolist() == pytest.approx([(20 + 10) / 2 + L / 100 for L in lead.tolist()], abs=1e-4)
+
+
+def test_blend_never_uses_newer_or_too_old_runs():
+    base = 1000
+    # ECMWF has a 12Z run that must not leak into blend 00Z; GFS 00Z and 18Z
+    ec = _runs_table([base, base + 12], lambda r: 10.0 if r == base else 99.0)
+    gf = _runs_table([base, base + 18], lambda r: 20.0 if r == base else 40.0)
+    b = correct.blend_table(ec, gf)
+    assert sorted(set((b["run"] // 60).tolist())) == [base, base + 12, base + 18]
+    _, _, t = _blend_rows(b, base)
+    assert (t < 50).all()  # no ECMWF 12Z (99) in blend 00Z
+    # blend 12Z: ECMWF 12Z + GFS 00Z (12 h old, allowed)
+    lead, _, t = _blend_rows(b, base + 12)
+    assert t[0] == pytest.approx((99.0 + 20.0 + 0.12) / 2, abs=1e-4)
+    # blend 18Z: GFS 18Z + ECMWF 12Z (6 h old); ECMWF 00Z (18 h old) never used
+    lead, _, t = _blend_rows(b, base + 18)
+    assert t[0] == pytest.approx((40.0 + 99.0 + 0.06) / 2, abs=1e-4)
+    # only a too-old component available -> single-model fallback
+    gf2 = _runs_table([base + 18], lambda r: 40.0)
+    b2 = correct.blend_table(_runs_table([base], lambda r: 10.0), gf2)
+    _, _, t = _blend_rows(b2, base + 18)
+    assert t[0] == pytest.approx(40.0)
+    assert (b2["run"] <= b2["valid"]).all() and (b["run"] <= b["valid"]).all()
