@@ -4,10 +4,7 @@ on:
   schedule:
     - cron: "40 * * * *"
   workflow_dispatch:
-  # Also rebuild as soon as new observations or forecasts are stored.
-  workflow_run:
-    workflows: ["Collect observations", "Collect forecasts"]
-    types: [completed]
+  # The collectors also start this workflow when they finish (see collect-*.yml).
   push:
     branches: [main]
     paths:

@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: write
+  actions: write # to start the site rebuild
 
 concurrency:
   group: collect-fcst
@@ -40,3 +41,8 @@ jobs:
           stationtruth collect-fcst
           --model "${{ inputs.model || 'all' }}"
           --runs "${{ inputs.runs || '2' }}"
+      # Runs started by the keeper use GITHUB_TOKEN, and GitHub does not fire
+      # workflow_run for those, so start the site rebuild explicitly.
+      - name: Rebuild site
+        if: success()
+        run: gh workflow run pages.yml --repo "${{ github.repository }}"

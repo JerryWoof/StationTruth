@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: write # to start the site rebuild
 
 concurrency:
   group: collect-obs
@@ -34,3 +35,8 @@ jobs:
         run: stationtruth collect-obs --recent-hours 2
       - name: Collect latest TAFs
         run: python -m stationtruth.tafs collect
+      # Runs started by the keeper use GITHUB_TOKEN, and GitHub does not fire
+      # workflow_run for those, so start the site rebuild explicitly.
+      - name: Rebuild site
+        if: success()
+        run: gh workflow run pages.yml --repo "${{ github.repository }}"
