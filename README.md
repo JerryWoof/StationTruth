@@ -6,8 +6,10 @@
 
 **How good are weather models, really?**
 
-StationTruth checks the world's two main global forecast models, **ECMWF IFS**
-and **NOAA GFS**, against what ~5,000 airports actually measured, every hour.
+StationTruth checks five global forecast models, the physics-based **ECMWF IFS**,
+**NOAA GFS** and **DWD ICON** and the machine-learning (AI) models **ECMWF AIFS**
+and **NOAA AIGFS**, against what ~5,000 airports actually measured, every hour:
+AI vs physics, scored the same way.
 It learns each model's local habits (*"GFS runs 2 °C too warm at night in this
 valley"*) and uses them to make bias-corrected forecasts, then scores those too,
 so you can see whether the correction actually helps.
@@ -38,17 +40,28 @@ so you can see whether the correction actually helps.
 
 ```
 aviationweather.gov METARs ─► collect-obs (hourly) ───┐
-ECMWF open data (0.25°)    ─► collect-fcst (3-hourly) ─┼─► GitHub Release assets (Parquet)
-NOAA GFS on AWS (0.25°)    ─►                          ┘              │
+ECMWF open data (IFS, AIFS) ─► collect-fcst (3-hourly) ─┼─► GitHub Release assets (Parquet)
+NOAA on AWS (GFS, AIGFS)    ─►                          │              │
+DWD open data (ICON)        ─►                          ┘              │
                                                                       ▼
                          verify → bias-correct → blend → site (hourly, GitHub Pages)
 ```
 
 1. **Observations**: METARs from aviationweather.gov, decoded with
    [MetarParse](https://github.com/JerryWoof/MetarParse).
-2. **Forecasts**: 00Z and 12Z runs, 0–72 h every 3 h. Only the needed GRIB2
-   messages are downloaded (HTTP range requests on the index files), decoded
-   with eccodes and bilinearly interpolated to each airport.
+2. **Forecasts**: 00Z and 12Z runs, 0–72 h every 3 h (AI models every 6 h). Only
+   the needed GRIB2 messages are downloaded (HTTP range requests on the index
+   files; ICON: one small file per field), decoded with eccodes and interpolated
+   to each airport (bilinear; ICON's icosahedral grid: 3 nearest cells). The
+   model list lives in [`registry.py`](src/stationtruth/registry.py).
+
+   | model | kind | provider | grid |
+   |---|---|---|---|
+   | ECMWF IFS | physics | ECMWF | 0.25° |
+   | NOAA GFS | physics | NOAA/NCEP | 0.25° |
+   | DWD ICON | physics | Deutscher Wetterdienst | ~13 km icosahedral |
+   | ECMWF AIFS | AI | ECMWF | 0.25° |
+   | NOAA AIGFS | AI | NOAA/NCEP | 0.25° |
 3. **Verification**: each forecast is matched with the nearest observation within
    ±30 min. Scores: bias, MAE, RMSE (circular error for wind direction).
 4. **Bias correction**: each model's typical error over the previous 14 days,
@@ -57,7 +70,7 @@ NOAA GFS on AWS (0.25°)    ─►                          ┘              │
    **only observations available before the forecast was issued** (no look-ahead,
    enforced by tests). Chosen by out-of-sample comparison with alternatives
    ([scripts/evaluate_correction.py](scripts/evaluate_correction.py)).
-5. **Blend**: the average of both corrected models, using each model's latest
+5. **Blend**: the average of all corrected models, using each model's latest
    available run.
 
 Everything runs on free infrastructure: GitHub Actions, GitHub Releases for the
@@ -78,10 +91,13 @@ cd site && python -m http.server                    # open http://localhost:8000
 ## Data and attribution
 
 - Observations: [aviationweather.gov](https://aviationweather.gov) (NOAA/NWS).
-- ECMWF forecasts: Source: [ECMWF](https://www.ecmwf.int), open data licensed
+- ECMWF forecasts (IFS and AIFS): Source: [ECMWF](https://www.ecmwf.int), open data licensed
   under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Data has been
   modified (interpolated to stations, bias-corrected).
-- GFS forecasts: NOAA, public domain, via the
+- ICON forecasts: Source: Deutscher Wetterdienst ([DWD open data](https://opendata.dwd.de),
+  [terms of use](https://www.dwd.de/EN/service/copyright/copyright_node.html)); modified
+  (interpolated to stations, bias-corrected).
+- GFS and AIGFS forecasts: NOAA, public domain, via the
   [NOAA Open Data Dissemination](https://registry.opendata.aws/noaa-gfs-bdp-pds/) program on AWS.
 
 Not for operational use. This is a verification experiment, not an official

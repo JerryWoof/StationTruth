@@ -67,10 +67,10 @@
   <h2 id="short">In short</h2>
   <ol>
     <li>Every hour we collect the latest weather reports (METARs) from about 5,000 airports.</li>
-    <li>Twice a day (00 and 12 UTC runs) we fetch the ECMWF and GFS forecasts for the next 72 hours and read off the value at each airport.</li>
+    <li>Twice a day (00 and 12 UTC runs) we fetch the forecasts of five global models for the next 72 hours — three physics-based (ECMWF IFS, NOAA GFS, DWD ICON) and two machine-learning “AI” models (ECMWF AIFS, NOAA AIGFS) — and read off the value at each airport.</li>
     <li>When the forecast hour arrives, we compare: <i>forecast − observed</i>. That difference is the error.</li>
     <li>Averaging those errors over 7 and 30 days tells us which model is better, where, and for which weather variable.</li>
-    <li>The average error of the last two weeks is subtracted from new forecasts. Those <b>corrected</b> forecasts (and a blend of both) are scored exactly like the raw ones.</li>
+    <li>The average error of the last two weeks is subtracted from new forecasts. Those <b>corrected</b> forecasts (and a blend of all of them) are scored exactly like the raw ones.</li>
   </ol>
   <div class="panel" style="margin-top:14px">
     <dl class="facts" id="facts">
@@ -87,9 +87,16 @@
   <h2 id="sources">Sources</h2>
   <h3>Observations — METAR</h3>
   <p>Routine (METAR) and special (SPECI) airport reports from the <a href="https://aviationweather.gov/data/api/" rel="noopener">aviationweather.gov</a> data cache run by NOAA's Aviation Weather Center, collected hourly. Each raw report is decoded with <a href="https://github.com/JerryWoof/MetarParse" rel="noopener">MetarParse</a>, our open-source METAR parser (the same library behind <a href="https://jerrywoof.github.io/MetarParse/" rel="noopener">MetarParse Live</a>). Where a US report carries the <code>T</code> remark group, temperature and dew point are taken to 0.1 °C instead of whole degrees; sea-level pressure comes from the <code>SLPppp</code> remark.</p>
-  <h3>Forecasts — ECMWF IFS and NOAA GFS</h3>
-  <p><b>ECMWF</b>: the Integrated Forecasting System high-resolution forecast from ECMWF's <a href="https://www.ecmwf.int/en/forecasts/datasets/open-data" rel="noopener">open data</a> service, 0.25° grid. <b>GFS</b>: NOAA's Global Forecast System at 0.25°, from the <a href="https://registry.opendata.aws/noaa-gfs-bdp-pds/" rel="noopener">NOAA Open Data Dissemination</a> bucket on AWS. For both, the 00 and 12 UTC runs are used, steps 0–72 h every 3 h.</p>
-  <p>Fields: 2 m temperature and dew point, 10 m wind (speed and direction from the u/v components), gusts (ECMWF <code>10fg</code>, GFS surface gust), mean-sea-level pressure (ECMWF <code>msl</code>, GFS <code>PRMSL</code>), cloud cover. Values are <b>bilinearly interpolated</b> from the four surrounding grid points to each station.</p>
+  <h3>Forecasts — physics vs AI</h3>
+  <p>Two kinds of global model are compared. <b>Physics</b> models solve the equations of the atmosphere on a grid; <b>AI</b> models (marked <span class="ai-badge">AI</span>) are neural networks trained on decades of past analyses that step the weather forward directly. All runs at 00 and 12 UTC are used, out to 72 h.</p>
+  <ul>
+    <li><b>ECMWF IFS</b> (physics): the Integrated Forecasting System high-resolution forecast from ECMWF's <a href="https://www.ecmwf.int/en/forecasts/datasets/open-data" rel="noopener">open data</a> service, 0.25° grid, every 3 h.</li>
+    <li><b>NOAA GFS</b> (physics): the Global Forecast System at 0.25°, from the <a href="https://registry.opendata.aws/noaa-gfs-bdp-pds/" rel="noopener">NOAA Open Data Dissemination</a> bucket on AWS, every 3 h.</li>
+    <li><b>DWD ICON</b> (physics): Deutscher Wetterdienst's global model on its native ~13 km icosahedral (triangular) grid, from <a href="https://opendata.dwd.de/weather/nwp/icon/grib/" rel="noopener">opendata.dwd.de</a>, every 3 h. Each airport takes the distance-weighted mean of the three nearest grid cells.</li>
+    <li><b>ECMWF AIFS</b> <span class="ai-badge">AI</span>: ECMWF's operational Artificial Intelligence Forecasting System (single deterministic run), open data, 0.25°, every 6 h. It has no gust field.</li>
+    <li><b>NOAA AIGFS</b> <span class="ai-badge">AI</span>: NOAA's operational AI Global Forecast System (a GraphCast-based model initialised from the GFS analysis), 0.25°, every 6 h, from NOAA's <a href="https://noaa-nws-graphcastgfs-pds.s3.amazonaws.com/index.html" rel="noopener">AI weather-model bucket</a> on AWS. It has no gust or cloud field.</li>
+  </ul>
+  <p>Fields: 2 m temperature and dew point, 10 m wind (speed and direction from the u/v components), gusts (ECMWF <code>10fg</code>, GFS surface gust, ICON hourly maximum <code>VMAX_10M</code>), mean-sea-level pressure, cloud cover. Values on the regular grids are <b>bilinearly interpolated</b> from the four surrounding grid points to each station. The AI models output every 6 h, so they are scored at 6-hourly lead times; a model without a variable is simply not scored for it.</p>
 
   <h2 id="matching">Matching forecasts to observations</h2>
   <ul>
@@ -107,14 +114,14 @@
     <li><b>MAE</b> = mean(|<i>e</i>|) — how far off is it on a typical hour?</li>
     <li><b>RMSE</b> = √mean(<i>e</i>²) — like MAE, but large misses weigh more. RMSE² = bias² + variance of the error, so removing bias can only lower RMSE if the bias is stable.</li>
   </ul>
-  <p>Windows are the last 7 and 30 days of verified pairs. Regions: Europe, North America, Central America &amp; Caribbean, South America, Africa, Middle East, Asia, Oceania and Polar (|latitude| &gt; 66.5°). The “best model here” on the map is the model with the lowest 7-day temperature RMSE at that station among those with at least 8 pairs.</p>
+  <p>Windows are the last 7 and 30 days of verified pairs. Regions: Europe, North America, Central America &amp; Caribbean, South America, Africa, Middle East, Asia, Oceania and Polar (|latitude| &gt; 66.5°). The “best model here” on the map is the model with the lowest 7-day temperature RMSE at that station among those with enough verified pairs.</p>
 
   <h2 id="correction">Bias correction (with no look-ahead)</h2>
   <p>Many forecast errors are systematic: a model grid cell is on average higher than the airport, a coastal station is mixed with sea, a valley gets colder at night than the smooth model terrain allows. These repeat day after day and can be learned.</p>
   <p>For each model, station, variable, <b>lead-time bucket</b> (0–24, 27–48, 51–72 h) and <b>time-of-day bucket</b> of the valid time (00–05, 06–11, 12–17, 18–23 UTC), the correction is the mean error over the <b>previous 14 days</b> of verified pairs <b>whose run started before the run being corrected</b>. Only information that was available when the forecast was issued is used — no look-ahead — so the corrected forecasts are scored fairly, as if they had been issued in real time.</p>
   <ul>
-    <li>A correction is applied only when the bucket has at least <b>8 pairs</b>; otherwise the raw forecast is kept. In the first days, “corrected” therefore equals “raw” almost everywhere.</li>
-    <li><code>ecmwf_bc</code> and <code>gfs_bc</code> are the corrected models. <code>blend</code> is the average of the two corrected forecasts (or whichever one exists).</li>
+    <li>Each layer of the estimate is weighted by its own sample size (shrinkage, n/(n+k)), so a correction starts small after the first verified run and grows as evidence accumulates, instead of switching on at a fixed sample size.</li>
+    <li>Every model <code>&lt;id&gt;</code> has a corrected twin <code>&lt;id&gt;_bc</code> (<code>ecmwf_bc</code>, <code>gfs_bc</code>, <code>icon_bc</code>, <code>aifs_bc</code>, <code>aigfs_bc</code>). <code>blend</code> is the average of all corrected forecasts available for that hour (each from its model's latest run, at most 12 h old); at 3-hourly lead times between the AI models' 6-hourly steps it averages the physics models only.</li>
     <li>Corrected forecasts are verified exactly like the raw ones, so the <a href="scores.html">scoreboard</a> shows whether the correction actually helps — and where it doesn't.</li>
   </ul>
   <div class="callout">Example: over the last two weeks ECMWF's afternoon (12–17 UTC) temperature at an airport in a valley was on average +1.2 °C too warm at 0–24 h lead. Today's ECMWF forecast of 18.0 °C for 15 UTC becomes 16.8 °C in <code>ecmwf_bc</code>.</div>
@@ -144,9 +151,11 @@
 
   <h2 id="licence">Licences, attribution &amp; credits</h2>
   <h3>ECMWF open data</h3>
-  <p>Copyright © 2026 European Centre for Medium-Range Weather Forecasts (ECMWF). Source: <a href="https://www.ecmwf.int" rel="noopener">www.ecmwf.int</a>. This data is published under a Creative Commons Attribution 4.0 International licence (<a href="https://creativecommons.org/licenses/by/4.0/" rel="noopener">CC BY 4.0</a>). <b>StationTruth has modified the data</b>: it is interpolated to station locations and, for <code>ecmwf_bc</code> and <code>blend</code>, bias-corrected. ECMWF does not accept any liability whatsoever for any error or omission in the data, their availability, or for any loss or damage arising from their use.</p>
-  <h3>NOAA GFS and aviationweather.gov</h3>
-  <p>GFS forecasts and METAR observations are produced by the US National Oceanic and Atmospheric Administration (NOAA) and are in the public domain. NOAA does not endorse this project.</p>
+  <p>Copyright © 2026 European Centre for Medium-Range Weather Forecasts (ECMWF). Source: <a href="https://www.ecmwf.int" rel="noopener">www.ecmwf.int</a>. This data is published under a Creative Commons Attribution 4.0 International licence (<a href="https://creativecommons.org/licenses/by/4.0/" rel="noopener">CC BY 4.0</a>). This covers both ECMWF IFS and ECMWF AIFS forecasts. <b>StationTruth has modified the data</b>: it is interpolated to station locations and, for <code>ecmwf_bc</code>, <code>aifs_bc</code> and <code>blend</code>, bias-corrected. ECMWF does not accept any liability whatsoever for any error or omission in the data, their availability, or for any loss or damage arising from their use.</p>
+  <h3>DWD ICON</h3>
+  <p>Source: <a href="https://www.dwd.de" rel="noopener">Deutscher Wetterdienst</a>. ICON forecasts are taken from the DWD open-data server under DWD's <a href="https://www.dwd.de/EN/service/copyright/copyright_node.html" rel="noopener">terms of use</a>; StationTruth has modified the data (interpolated to station locations and, for <code>icon_bc</code> and <code>blend</code>, bias-corrected).</p>
+  <h3>NOAA GFS, AIGFS and aviationweather.gov</h3>
+  <p>GFS and AIGFS forecasts and METAR observations are produced by the US National Oceanic and Atmospheric Administration (NOAA) and are in the public domain. NOAA does not endorse this project.</p>
   <h3>Software</h3>
   <p>StationTruth is open source under the MIT licence: <a href="https://github.com/JerryWoof/StationTruth" rel="noopener">github.com/JerryWoof/StationTruth</a>. Observations are decoded with <a href="https://github.com/JerryWoof/MetarParse" rel="noopener">MetarParse</a> (<a href="https://jerrywoof.github.io/MetarParse/" rel="noopener">MetarParse Live</a> shows every airport's current weather). Data collection, verification and this site run on GitHub Actions and GitHub Pages and are regenerated every hour. Map: <a href="https://leafletjs.com" rel="noopener">Leaflet</a> with Esri Canvas tiles (© Esri, HERE, Garmin, © OpenStreetMap contributors); charts: <a href="https://github.com/leeoniya/uPlot" rel="noopener">uPlot</a>. No trackers, no cookies.</p>
 
@@ -156,7 +165,7 @@
 </main>
 
 <script type="module">
-  import { loadMeta, setStatus, renderNav, collectingHTML, fmtInt, dateLabel, ago, runLabel, utcLabel } from './common.js?v=__BUILD__';
+  import { loadMeta, setStatus, renderNav, collectingHTML, fmtInt, dateLabel, ago, runLabel, utcLabel, MODELS, useModels } from './common.js?v=__BUILD__';
   const $ = (id) => document.getElementById(id);
   renderNav('about');
   loadMeta().then((meta) => {
@@ -168,7 +177,8 @@
     $('f-st').textContent = fmtInt(meta.station_count);
     $('f-pairs').textContent = fmtInt(meta.pairs);
     const lr = meta.latest_run || {};
-    $('f-runs').textContent = [lr.ecmwf && `ECMWF ${runLabel(lr.ecmwf)}`, lr.gfs && `GFS ${runLabel(lr.gfs)}`].filter(Boolean).join(' · ') || '–';
+    useModels(meta);
+    $('f-runs').textContent = MODELS.filter((m) => m.raw && lr[m.id]).map((m) => `${m.label} ${runLabel(lr[m.id])}`).join(' · ') || '–';
     $('f-gen').textContent = `${dateLabel(meta.generated)} ${utcLabel(meta.generated)} (${ago(meta.generated)})`;
     if (meta.last_obs) $('f-last').textContent = `${dateLabel(meta.last_obs)} ${utcLabel(meta.last_obs)} (${ago(meta.last_obs)})`;
   }).catch((e) => console.error(e));

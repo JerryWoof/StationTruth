@@ -1,6 +1,6 @@
 // StationTruth — map page
 import {
-  MODELS, MODEL, VARS, METARPARSE, isNum, esc, fmt, fmtSigned, fmtInt, median, parseTime, runLabel, ago, utcLabel,
+  MODELS, MODEL, VARS, METARPARSE, useModels, modelName, modelText, corrected, isNum, esc, fmt, fmtSigned, fmtInt, median, parseTime, runLabel, ago, utcLabel,
   getJSON, loadMeta, progress, collectingHTML, setStatus, cssVar, modelColour, divColour, DIV_GRADIENT,
   darkMQ, onThemeChange, axisStyle, observeWidth, seg, legendSwatch, renderNav,
 } from './common.js?v=__BUILD__';
@@ -52,7 +52,7 @@ function initialZoom() {
 }
 L.control.zoom({ position: 'topright' }).addTo(map);
 map.attributionControl.setPrefix(
-  '<a href="https://leafletjs.com" rel="noopener">Leaflet</a> · Obs: <a href="https://aviationweather.gov" rel="noopener">aviationweather.gov</a> · Forecasts: Source <a href="https://www.ecmwf.int" rel="noopener">ECMWF</a> (<a href="https://creativecommons.org/licenses/by/4.0/" rel="noopener">CC BY 4.0</a>, modified), NOAA GFS · Not for operational use',
+  '<a href="https://leafletjs.com" rel="noopener">Leaflet</a> · Obs: <a href="https://aviationweather.gov" rel="noopener">aviationweather.gov</a> · Forecasts: Source <a href="https://www.ecmwf.int" rel="noopener">ECMWF</a> (IFS, AIFS; <a href="https://creativecommons.org/licenses/by/4.0/" rel="noopener">CC BY 4.0</a>, modified), NOAA GFS &amp; AIGFS, Source: <a href="https://www.dwd.de" rel="noopener">Deutscher Wetterdienst</a> (ICON) · Not for operational use',
 );
 
 // Basemap: Esri Canvas (keyless) — same as MetarParse Live. CARTO now requires an API key.
@@ -139,8 +139,8 @@ map.on('click', () => { if (state.selected) closeStation(); });
 function tipValue(s) {
   const v = valueOf(s);
   const V = VARS[state.v];
-  const mname = MODEL[state.model].label;
-  if (state.mode === 'best') return v ? `Best 7-day temperature model: ${MODEL[v]?.label || v}` : 'Not enough history yet';
+  const mname = modelText(state.model);
+  if (state.mode === 'best') return v ? `Best 7-day temperature model: ${modelText(v)}` : 'Not enough history yet';
   if (v == null) return state.mode === 'bias' ? `No 7-day ${V.label.toLowerCase()} bias yet` : `No ${V.label.toLowerCase()} to compare`;
   if (state.mode === 'bias') return `${mname} 7-day bias ${fmtSigned(v)} ${V.unit}`;
   return `Obs ${fmt(s.obs[state.v])} · ${mname} ${fmt(s.fc[state.model][state.v])} ${V.unit} (${fmtSigned(v)})`;
@@ -148,8 +148,12 @@ function tipValue(s) {
 
 /* ------------------------------------------------------------------ controls + legend */
 const modelSel = $('model-sel');
-modelSel.innerHTML = MODELS.map((m) => `<option value="${m.id}">${esc(m.long)}</option>`).join('');
-modelSel.value = state.model;
+function fillModelSel() {
+  if (!MODELS.some((m) => m.id === state.model)) state.model = MODELS[0]?.id || 'ecmwf';
+  modelSel.innerHTML = MODELS.map((m) => `<option value="${m.id}">${esc(modelText(m.id, true))}</option>`).join('');
+  modelSel.value = state.model;
+}
+fillModelSel();
 modelSel.addEventListener('change', () => { state.model = modelSel.value; store.set('model', state.model); refresh(); });
 const varSel = $('var-sel');
 varSel.value = state.v;
@@ -173,14 +177,14 @@ function renderLegend() {
     let none = 0;
     for (const s of state.stations) { if (s.best in counts) counts[s.best]++; else none++; }
     el.innerHTML = `<div class="cap">Lowest 7-day temperature RMSE at each station (≥ ${MIN_N} pairs) · stations won</div>
-      <div class="sw">${MODELS.map((m) => `<span title="${esc(m.long)}: best at ${fmtInt(counts[m.id])} stations"><i style="background:var(--m-${m.id})"></i>${esc(m.label)} <b>${fmtInt(counts[m.id])}</b></span>`).join('')}${none ? `<span title="Fewer than ${MIN_N} verified pairs"><i style="background:var(--unk)"></i>Too few pairs <b>${fmtInt(none)}</b></span>` : ''}</div>
+      <div class="sw">${MODELS.map((m) => `<span title="${esc(m.long)}: best at ${fmtInt(counts[m.id])} stations"><i style="background:var(--m-${m.id})"></i>${modelName(m.id)} <b>${fmtInt(counts[m.id])}</b></span>`).join('')}${none ? `<span title="Fewer than ${MIN_N} verified pairs"><i style="background:var(--unk)"></i>Too few pairs <b>${fmtInt(none)}</b></span>` : ''}</div>
       ${withData ? '' : '<div class="cap" style="margin-top:6px">No station has enough history yet.</div>'}`;
     return;
   }
   const V = VARS[state.v];
   const r = V.range * (state.mode === 'bias' ? 0.75 : 1);
   const [lo, hi] = LOW_HIGH[state.v];
-  const what = state.mode === 'bias' ? `${MODEL[state.model].label} 7-day mean error` : `${MODEL[state.model].label} forecast − observed, now`;
+  const what = state.mode === 'bias' ? `${modelText(state.model)} 7-day mean error` : `${modelText(state.model)} forecast − observed, now`;
   el.innerHTML = `<div class="cap">${esc(what)} · ${esc(V.label.toLowerCase())}, ${esc(V.unit)}</div>
     <div class="ramp" style="background:${DIV_GRADIENT}"></div>
     <div class="ticks"><span>≤ −${fmt(r, r < 4 ? 1 : 0)}</span><span>−${fmt(r / 2, r < 4 ? 1 : 0)}</span><span>0</span><span>+${fmt(r / 2, r < 4 ? 1 : 0)}</span><span>≥ +${fmt(r, r < 4 ? 1 : 0)}</span></div>
@@ -196,28 +200,53 @@ function absErrors(model, v) {
   }
   return out;
 }
+// Median |error| now per model, on the stations where every compared model has a value
+// (a common sample, so the comparison is fair); falls back to each model's own stations.
+function medians(ids, v = 't') {
+  const common = state.stations.filter((s) => isNum(s.obs?.[v]) && ids.every((m) => isNum(s.fc?.[m]?.[v])));
+  const own = Math.max(0, ...ids.map((m) => absErrors(m, v).length));
+  const useCommon = common.length >= 0.5 * own;
+  const med = {};
+  for (const m of ids) {
+    med[m] = useCommon ? median(common.map((s) => Math.abs(s.fc[m][v] - s.obs[v]))) : median(absErrors(m, v));
+  }
+  return { med, n: useCommon ? common.length : own, common: useCommon };
+}
 function renderHeadline() {
-  const raw = absErrors('ecmwf', 't');
-  const bc = absErrors('ecmwf_bc', 't');
-  const mRaw = median(raw); const mBc = median(bc);
   const head = $('headline'); const short = $('headline-short'); const sub = $('headline-sub');
-  if (mRaw == null) {
+  const rawIds = MODELS.filter((m) => m.raw && absErrors(m.id, 't').length).map((m) => m.id);
+  const { med, n } = medians(rawIds);
+  const bestOf = (ids) => ids.filter((m) => med[m] != null).sort((a, b) => med[a] - med[b])[0];
+  const phys = bestOf(rawIds.filter((m) => MODEL[m].kind === 'physics'));
+  const ai = bestOf(rawIds.filter((m) => MODEL[m].kind === 'ai'));
+  const lead = phys || ai;
+  const name = (m) => `<b>${modelName(m)}</b>`;
+  if (!lead) {
     head.innerHTML = 'No recent forecast–observation pairs yet. The map fills in as soon as the first model run is verified.';
     short.textContent = 'Waiting for the first verified forecasts';
   } else {
-    let tail;
+    // bias correction of the better raw model, on the same stations
+    const top = phys && ai ? (med[ai] < med[phys] ? ai : phys) : lead;
+    const bc = corrected(top);
+    const mc = MODEL[bc] && MODELS.includes(MODEL[bc]) ? medians([top, bc]).med : {};
     // compare what we display (1 decimal) so we never claim "cuts 0.9 to 0.9"
-    const r = Number(fmt(mRaw)); const rb = mBc == null ? null : Number(fmt(mBc));
-    if (rb != null && rb < r) tail = `; bias correction cuts it to <span class="good">${fmt(mBc)} °C</span>.`;
-    else if (rb != null && rb > r) tail = `; bias correction isn't helping yet (${fmt(mBc)} °C).`;
-    else tail = '; bias correction hasn\'t changed it yet — it needs a few days of history.';
-    head.innerHTML = `Right now, <b>ECMWF's</b> median temperature error is <b>${fmt(mRaw)} °C</b>${tail}`;
-    short.textContent = rb != null && rb < r ? `ECMWF median temp. error ${fmt(mRaw)} °C → ${fmt(mBc)} °C corrected` : `ECMWF median temperature error ${fmt(mRaw)} °C`;
+    const r = Number(fmt(mc[top])); const rb = mc[bc] == null ? null : Number(fmt(mc[bc]));
+    let tail = '.';
+    if (rb != null && rb < r) tail = `; bias-correcting ${modelName(top)} cuts it to <span class="good">${fmt(mc[bc])} °C</span>.`;
+    else if (rb != null && rb > r) tail = `; bias correction isn't helping yet (${fmt(mc[bc])} °C).`;
+    else if (rb != null) tail = '; bias correction hasn\'t changed it yet — it needs a few days of history.';
+    if (phys && ai) {
+      const diff = Number(fmt(med[ai])) - Number(fmt(med[phys]));
+      const verdict = diff < 0 ? 'AI is ahead' : diff > 0 ? 'physics is ahead' : 'a tie';
+      head.innerHTML = `<b>AI vs physics</b> right now: median temperature error ${name(ai)} <b>${fmt(med[ai])} °C</b> vs ${name(phys)} <b>${fmt(med[phys])} °C</b> (${verdict})${tail}`;
+      short.textContent = `AI ${MODEL[ai].label} ${fmt(med[ai])} °C vs physics ${MODEL[phys].label} ${fmt(med[phys])} °C median temp. error`;
+    } else {
+      head.innerHTML = `Right now, ${name(lead)}'s median temperature error is <b>${fmt(med[lead])} °C</b>${tail}`;
+      short.textContent = `${MODEL[lead].label} median temperature error ${fmt(med[lead])} °C`;
+    }
   }
-  const g = median(absErrors('gfs', 't')); const gb = median(absErrors('gfs_bc', 't'));
-  const parts = [];
-  if (g != null) parts.push(`GFS ${fmt(g)} °C${gb != null && Number(fmt(gb)) < Number(fmt(g)) ? ` → ${fmt(gb)} °C corrected` : ''}`);
-  parts.push(`${fmtInt(raw.length)} stations reporting in the last 3 h`);
+  const parts = rawIds.filter((m) => m !== phys && m !== ai && med[m] != null).map((m) => `${modelName(m)} ${fmt(med[m])} °C`);
+  parts.push(`${fmtInt(n)} stations reporting in the last 3 h`);
   // best model over the last 7 days (needs a meaningful sample)
   const glob = state.scores?.windows?.['7d']?.global;
   if (glob) {
@@ -226,7 +255,7 @@ function renderHeadline() {
       const a = glob[m.id]?.t?.all;
       if (a && a.n >= 1000 && isNum(a.rmse) && (!best || a.rmse < best[1])) best = [m.id, a.rmse];
     }
-    if (best) parts.push(`best over 7 days: <b>${esc(MODEL[best[0]].label)}</b> (RMSE ${fmt(best[1])} °C) — <a href="scores.html">scoreboard</a>`);
+    if (best) parts.push(`best over 7 days: <b>${modelName(best[0])}</b> (RMSE ${fmt(best[1])} °C) — <a href="scores.html">scoreboard</a>`);
   }
   sub.innerHTML = parts.join(' · ');
   $('collecting').innerHTML = collectingHTML(state.meta);
@@ -329,7 +358,7 @@ function renderStation({ loading = false, keepScroll = false } = {}) {
       ${MODELS.map((m) => {
         const f = s.fc?.[m.id];
         const lead = f ? `${runLabel(f.run)} +${f.lead_h} h` : 'no forecast';
-        return `<tr><td><span class="mname" title="Run ${esc(lead)}">${legendSwatch(m.id, false)}${esc(m.label)}</span></td>
+        return `<tr><td><span class="mname" title="Run ${esc(lead)}">${legendSwatch(m.id, false)}${modelName(m.id)}</span></td>
           <td>${errCell(f?.t, o.t)}</td><td>${errCell(f?.td, o.td)}</td><td>${errCell(f?.wspd, o.wspd)}</td><td>${errCell(f?.mslp, o.mslp)}</td></tr>`;
       }).join('')}</tbody></table></div>
       <p class="note">Small numbers are forecast − observed: <span style="color:var(--cold);font-weight:600">blue</span> = model too low/cold, <span style="color:var(--warm);font-weight:600">red</span> = too high/warm. MSLP is only verified where the station reports sea-level pressure.</p>`;
@@ -349,9 +378,9 @@ function renderStation({ loading = false, keepScroll = false } = {}) {
     html += `<div class="chart" id="chart" role="img" aria-label="${esc(VARS[state.chartVar].label)}: observed vs model forecasts"></div>
       <div class="chart-key" id="chart-key">
         <span class="key-btn key-static"><i class="sw-obs"></i>Observed</span>
-        ${MODELS.map((m) => `<button type="button" class="key-btn" data-m="${m.id}" aria-pressed="${!state.hidden.has(m.id)}">${legendSwatch(m.id, false)}${esc(m.label)}</button>`).join('')}
+        ${MODELS.map((m) => `<button type="button" class="key-btn" data-m="${m.id}" aria-pressed="${!state.hidden.has(m.id)}">${legendSwatch(m.id, false)}${modelName(m.id)}</button>`).join('')}
       </div>
-      <div class="chart-hint"><span><i class="past"></i>past: 24 h forecasts</span><span><i class="fut"></i>future: latest run${d.future?.ecmwf?.run ? ` (ECMWF ${esc(runLabel(d.future.ecmwf.run))})` : ''}</span></div>`;
+      <div class="chart-hint"><span><i class="past"></i>past: 24 h forecasts</span><span><i class="fut"></i>future: latest run${futureRuns(d)}</span></div>`;
   }
   html += '</section>';
 
@@ -379,6 +408,12 @@ function renderStation({ loading = false, keepScroll = false } = {}) {
   if (!keepScroll && !loading && !narrowMQ.matches) $('sp-name')?.focus({ preventScroll: true });
 }
 
+// "(ECMWF 12 Oct 00Z, AIFS 12 Oct 00Z, …)": latest run per raw model in the station file
+function futureRuns(d) {
+  const runs = MODELS.filter((m) => m.raw && d.future?.[m.id]?.run).map((m) => `${m.label} ${runLabel(d.future[m.id].run)}`);
+  return runs.length ? ` (${esc(runs.join(', '))})` : '';
+}
+
 function stationScoresHTML(d) {
   const sc = d?.scores?.[state.scoreWin];
   const v = state.chartVar; const unit = VARS[v].unit;
@@ -395,7 +430,7 @@ function stationScoresHTML(d) {
   };
   return `<div class="tbl-wrap"><table class="tbl">
     <thead><tr><th scope="col">Model</th><th scope="col">n</th><th scope="col">Bias</th><th scope="col">MAE</th><th scope="col">RMSE</th></tr></thead>
-    <tbody>${rows.map(([m, r]) => `<tr class="${!r || r.n < MIN_N ? 'thin' : ''}"><td><span class="mname">${legendSwatch(m.id, false)}${esc(m.label)}</span></td>
+    <tbody>${rows.map(([m, r]) => `<tr class="${!r || r.n < MIN_N ? 'thin' : ''}"><td><span class="mname">${legendSwatch(m.id, false)}${modelName(m.id)}</span></td>
       <td>${fmtInt(r?.n ?? 0)}</td>${cell(r, 'bias', bB, Math.abs, true)}${cell(r, 'mae', bM)}${cell(r, 'rmse', bR)}</tr>`).join('')}</tbody>
     <caption>All forecast lead times, ${esc(unit)}. ★ = best. Bias &gt; 0 means the model forecasts too high. Rows with fewer than ${MIN_N} pairs are not scored.</caption>
   </table></div>`;
@@ -472,7 +507,7 @@ function drawChart(d) {
     data.push(col(s, breaks[k + 1]));
     const raw = MODEL[s.m].raw;
     series.push({
-      label: `${MODEL[s.m].label} ${s.kind}`, stroke: modelColour(s.m), width: raw ? 1.4 : 1.9,
+      label: `${modelText(s.m)} ${s.kind}`, stroke: modelColour(s.m), width: raw ? 1.4 : 1.9,
       dash: s.kind === 'future' ? [6, 4] : undefined, spanGaps: false, show: !state.hidden.has(s.m), points: { show: false },
     });
     seriesModel.push(s.m);
@@ -543,7 +578,7 @@ function drawChart(d) {
           if (val == null) continue;
           seen.add(m);
           const e = isNum(ob) ? ` <span class="muted">${fmtSigned(val - ob)}</span>` : '';
-          rows.push(`<div class="tr"><span>${legendSwatch(m, false)}${esc(MODEL[m].label)}</span><b>${fmt(val)}${e}</b></div>`);
+          rows.push(`<div class="tr"><span>${legendSwatch(m, false)}${modelName(m)}</span><b>${fmt(val)}${e}</b></div>`);
         }
         if (!rows.length) { tipEl.hidden = true; return; }
         const dt = new Date(t * 1000);
@@ -655,6 +690,9 @@ async function boot() {
   const loading = $('loading');
   try {
     state.meta = await loadMeta();
+    useModels(state.meta); // only the models the data has
+    fillModelSel();
+    readColours();
     const [latest, scores] = await Promise.all([
       getJSON('data/latest.json', { optional: true }),
       getJSON('data/scores.json', { optional: true }).catch(() => null),

@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       days:
-        description: "days of history (obs: Data API keeps ~2-4 weeks; ECMWF open data ~4 days)"
+        description: "days of history (obs: Data API ~2-4 weeks; ECMWF IFS ~4 days, AIFS ~3 days, ICON latest run only; GFS/AIGFS months)"
         default: "7"
       models:
-        description: "comma-separated models, empty for none"
-        default: "ecmwf,gfs"
+        description: "comma-separated models (ecmwf, gfs, icon, aifs, aigfs) or all; empty for none"
+        default: "all"
       obs:
         description: "backfill observations too"
         type: boolean

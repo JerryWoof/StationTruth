@@ -309,3 +309,60 @@ def test_blend_never_uses_newer_or_too_old_runs():
     _, _, t = _blend_rows(b2, base + 18)
     assert t[0] == pytest.approx(40.0)
     assert (b2["run"] <= b2["valid"]).all() and (b["run"] <= b["valid"]).all()
+
+
+def test_blend_n_models_mixed_steps_and_missing_vars():
+    """Three components: two 3-hourly, one 6-hourly AI model without gust."""
+    base = 1000
+    a = _runs_table([base], lambda r: 10.0)
+    b = _runs_table([base], lambda r: 20.0)
+    c = _runs_table([base], lambda r: 40.0, leads=range(0, 73, 6))
+    a["gust"] = np.full(len(a["sid"]), 30, np.float32)
+    b["gust"] = np.full(len(b["sid"]), 20, np.float32)  # c has no gust (NaN)
+    a["wdir"][:] = 350
+    b["wdir"][:] = 10
+    c["wdir"][:] = 0
+    bl = correct.blend_table(a, None, b, c)
+    lead, _, t = _blend_rows(bl, base)
+    assert lead.tolist() == list(range(0, 73, 3))
+    for L, x in zip(lead.tolist(), t.tolist(), strict=True):
+        want = (10 + 20 + 40) / 3 if L % 6 == 0 else (10 + 20) / 2
+        assert x == pytest.approx(want + L / 100, abs=1e-4), L
+    assert np.allclose(bl["gust"], 25)  # mean of the models that have gust
+    d = bl["wdir"]
+    assert np.all((d < 1e-3) | (d > 360 - 1e-3))  # circular mean of 350, 10, 0
+    # order-independent and identical to the 2-model result for 2 components
+    bl2 = correct.blend_table(c, b, a)
+    assert np.array_equal(bl["t"], bl2["t"]) and np.array_equal(bl["sid"], bl2["sid"])
+    two = correct.blend_table(a, b)
+    assert two["t"].tolist() == pytest.approx(
+        [(10 + 20) / 2 + L / 100 for L in range(0, 73, 3)], abs=1e-4
+    )
+
+
+def test_blend_n_models_keeps_age_rule_per_component():
+    base = 1000
+    a = _runs_table([base, base + 12], lambda r: 10.0 if r == base else 11.0)
+    b = _runs_table([base], lambda r: 20.0)  # 12 h old at blend 12Z: allowed
+    c = _runs_table([base - 6], lambda r: 99.0)  # 18 h old at 12Z: never used there
+    bl = correct.blend_table(a, b, c)
+    assert sorted(set((bl["run"] // 60).tolist())) == [base - 6, base, base + 12]
+    _, _, t = _blend_rows(bl, base + 12)
+    assert t[0] == pytest.approx((11.0 + 20.0 + 0.12) / 2, abs=1e-4)
+    _, _, t = _blend_rows(bl, base)  # c is 6 h old at 00Z: used
+    assert t[0] == pytest.approx((10.0 + 20.0 + 99.06) / 3, abs=1e-4)
+    _, _, t = _blend_rows(bl, base - 6)  # only c exists: no later run leaks in
+    assert t[0] == pytest.approx(99.0)
+
+
+def test_build_models_corrects_every_registry_model(synth):
+    ds = verify.load(synth.data_dir, synth.now)
+    raw = {"aifs": ds.fc.pop("gfs"), "ecmwf": ds.fc.pop("ecmwf")}  # any registry ids
+    for T in raw.values():
+        verify.match_table(T, ds.obs)
+    n_aifs = len(raw["aifs"]["sid"])
+    out, info = correct.build_models(raw, ds.obs)
+    # registry order: raw models, corrected models, blend
+    assert list(out) == ["ecmwf", "aifs", "ecmwf_bc", "aifs_bc", "blend"]
+    assert set(info) == {"ecmwf_bc", "aifs_bc"}
+    assert len(out["aifs_bc"]["sid"]) == n_aifs

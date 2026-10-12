@@ -230,3 +230,132 @@ def test_write_fcst_roundtrip(tmp_path):
     assert list(back.columns) == grib.FCST_COLUMNS
     assert str(back["valid"].dtype) == "datetime64[ns, UTC]"
     assert back["t"].iloc[0] == pytest.approx(16.85, abs=0.01)
+
+
+# --------------------------------------------------------------------------- ICON (unstructured)
+
+
+def make_ugrid(values: np.ndarray, uuid: str = "a27b8de618c411e4820ab5b098c6a5c0") -> bytes:
+    """An unstructured-grid GRIB2 message (template 3.101, like DWD ICON)."""
+    h = eccodes.codes_grib_new_from_samples("GRIB2")
+    try:
+        eccodes.codes_set(h, "gridDefinitionTemplateNumber", 101)
+        eccodes.codes_set(h, "numberOfGridUsed", 26)
+        eccodes.codes_set(h, "uuidOfHGrid", uuid)
+        eccodes.codes_set(h, "numberOfDataPoints", len(values))
+        eccodes.codes_set(h, "bitsPerValue", 24)
+        eccodes.codes_set_values(h, np.asarray(values, dtype="float64"))
+        return eccodes.codes_get_message(h)
+    finally:
+        eccodes.codes_release(h)
+
+
+def fibonacci_sphere(n: int) -> tuple[np.ndarray, np.ndarray]:
+    """n roughly evenly spaced points (lat, lon degrees), like icosahedral cell centres."""
+    i = np.arange(n) + 0.5
+    lat = np.degrees(np.arcsin(1 - 2 * i / n))
+    lon = (np.degrees(np.pi * (1 + 5**0.5) * i) + 180) % 360 - 180
+    return lat, lon
+
+
+def test_decode_unstructured():
+    vals, grid, meta = grib.decode_message(make_ugrid(np.array([280.0, 281.5, 290.25])))
+    assert isinstance(grid, grib.UGrid) and grid.n == 3
+    assert grid.uuid == "a27b8de618c411e4820ab5b098c6a5c0"
+    assert vals == pytest.approx([280.0, 281.5, 290.25], abs=1e-3)
+
+
+def test_unstructured_weights_match_brute_force():
+    clat, clon = fibonacci_sphere(200_000)  # ~50 km spacing
+    rng = np.random.default_rng(1)
+    lat = np.r_[rng.uniform(-90, 90, 300), 89.99, -89.99, clat[1234], np.nan]
+    lon = np.r_[rng.uniform(-180, 180, 300), 0.0, 179.9, clon[1234], 0.0]
+    pw = grib.unstructured_weights(clat, clon, lat, lon, cell=0.02)
+    assert pw.valid[:-1].all() and not pw.valid[-1]  # NaN station has no weights
+    P = grib._xyz(clat, clon)
+    for i in range(len(lat) - 1):
+        d = ((P - grib._xyz(lat[i : i + 1], lon[i : i + 1])) ** 2).sum(axis=1)
+        assert set(np.argsort(d)[:3]) == set(pw.idx[i]), i
+    assert pw.w[pw.valid].sum(axis=1) == pytest.approx(1.0)
+    # a station on a cell centre takes that cell's value exactly
+    assert pw.idx[302, 0] == 1234 and pw.w[302, 0] == 1.0
+
+    # a smooth field is reproduced closely (cells ~50 km apart)
+    def smooth(la, lo):  # 10 z + x on the unit sphere: smooth also at the poles
+        la, lo = np.radians(la), np.radians(lo)
+        return np.sin(la) * 10 + np.cos(la) * np.cos(lo)
+
+    field = smooth(clat, clon)
+    want = smooth(lat, lon)
+    got = pw.apply(field)
+    assert np.isnan(got[-1])
+    assert np.abs(got[:-1] - want[:-1]).max() < 0.1
+    # NaN neighbours are skipped, not propagated
+    field[pw.idx[0, 0]] = np.nan
+    assert np.isfinite(pw.apply(field)[0])
+
+
+def test_fetch_run_icon_unstructured(tmp_path, monkeypatch):
+    monkeypatch.setenv("STATIONTRUTH_CACHE", str(tmp_path / "cache"))
+    clat, clon = fibonacci_sphere(50_000)
+    stations = pd.DataFrame(
+        {"station": ["AAAA", "BBBB"], "lat": [50.1, -33.9], "lon": [14.3, 151.2]}
+    )
+    n = len(clat)
+    const = {
+        "t": 288.15,
+        "td": 278.15,
+        "u": 0.0,
+        "v": -10.0,
+        "gust": 12.0,
+        "mslp": 101325.0,
+        "tcc": 75.0,  # ICON CLCT is already in %
+    }
+    msgs = {k: make_ugrid(np.full(n, c)) for k, c in const.items()}
+    src = dataclasses.replace(models.ICON, steps=(0, 3))
+    coord_calls = []
+
+    def coords(source, run):
+        coord_calls.append(run)
+        return clat, clon, "a27b8de618c411e4820ab5b098c6a5c0"
+
+    def fake_step(source, run, step, max_gap):
+        sel = {v: msgs[v] for v, _ in source.files(step)}
+        return grib.StepResult(step, sel, len(sel), 1)
+
+    df, stats = grib.fetch_run(
+        src, RUN, stations, fetch_step=fake_step, ugrid_coords=coords, log=None
+    )
+    assert stats["failed_steps"] == [] and len(df) == 4
+    row = df[(df.station == "BBBB") & (df.lead_h == 3)].iloc[0]
+    assert row.t == pytest.approx(15.0, abs=0.01) and row.mslp == pytest.approx(1013.25)
+    assert row.wspd == pytest.approx(19.44, abs=0.01) and row.tcc == pytest.approx(75.0)
+    assert row.gust == pytest.approx(23.33, abs=0.01)
+    assert df[df.lead_h == 0]["gust"].isna().all()  # VMAX_10M has no step-0 file
+    assert len(coord_calls) == 1  # one grid: weights computed once per run
+    # the station mapping is cached on disk: a second run needs no coordinates
+    grib.fetch_run(src, RUN, stations, fetch_step=fake_step, ugrid_coords=coords, log=None)
+    assert len(coord_calls) == 1
+    assert len(list((tmp_path / "cache").glob("ugrid-icon-*.npz"))) == 1
+
+
+def test_fetch_files_layout_decompresses(monkeypatch):
+    import bz2
+
+    urls = []
+    msg = make_ugrid(np.full(4, 280.0))
+
+    def fake_get(url, **kw):
+        urls.append(url)
+        return bz2.compress(msg)
+
+    monkeypatch.setattr(grib.http, "get", fake_get)
+    res = grib._fetch_step(models.ICON, RUN, 0, 0)
+    assert res.error is None and set(res.fields) == {"t", "td", "u", "v", "mslp", "tcc"}
+    assert res.fields["t"] == msg and res.requests == 6
+    assert urls[0] == (
+        "https://opendata.dwd.de/weather/nwp/icon/grib/00/t_2m/"
+        "icon_global_icosahedral_single-level_2026101200_000_T_2M.grib2.bz2"
+    )
+    res = grib._fetch_step(models.ICON, RUN, 3, 0)
+    assert "gust" in res.fields and urls[-1].endswith("_003_CLCT.grib2.bz2")

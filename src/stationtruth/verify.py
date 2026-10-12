@@ -31,12 +31,15 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
+from . import registry
 from .regions import REGIONS, region_index
 
 log = logging.getLogger(__name__)
 
-RAW_MODELS: tuple[str, ...] = ("ecmwf", "gfs")
-MODELS: tuple[str, ...] = ("ecmwf", "gfs", "ecmwf_bc", "gfs_bc", "blend")
+#: raw models, then their bias-corrected versions (``<id>_bc``), then ``blend``
+#: (see :mod:`stationtruth.registry`)
+RAW_MODELS: tuple[str, ...] = registry.RAW_MODELS
+MODELS: tuple[str, ...] = registry.MODELS
 FC_VARS: tuple[str, ...] = ("t", "td", "wspd", "gust", "wdir", "mslp")
 VERIFY_VARS: tuple[str, ...] = ("t", "td", "wspd", "gust", "mslp", "wdir")
 OBS_VARS: tuple[str, ...] = ("t", "td", "wdir", "wspd", "gust", "slp")

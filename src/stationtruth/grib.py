@@ -2,18 +2,27 @@
 
 Only the messages we need are downloaded: each source publishes an index
 (byte offset/length per message), adjacent ranges are merged, and a modest
-thread pool downloads steps in parallel. Decoding (eccodes) and the bilinear
+thread pool downloads steps in parallel. Decoding (eccodes) and the
 interpolation run in the calling thread, one step at a time, so memory stays
 at a few global fields.
+
+Regular lat/lon grids (ECMWF, GFS, AIGFS) are interpolated bilinearly. DWD ICON
+comes per parameter and step as small bz2 files on its native unstructured
+(icosahedral) grid; there each station gets the inverse-distance-weighted mean
+of its 3 nearest cell centres (:func:`unstructured_weights`, cached per grid).
 """
 
 from __future__ import annotations
 
+import bz2
+import hashlib
+import os
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -107,13 +116,34 @@ class Grid:
         return abs(self.ni * self.di - 360.0) < self.di * 0.5
 
 
-def decode_message(msg: bytes) -> tuple[np.ndarray, Grid, dict]:
-    """Decode one GRIB message into a ``(nj, ni)`` float64 array (NaN for missing)."""
+@dataclass(frozen=True)
+class UGrid:
+    """Unstructured grid (ICON): identified by its GRIB ``uuidOfHGrid``."""
+
+    uuid: str
+    n: int
+
+
+def decode_message(msg: bytes) -> tuple[np.ndarray, Grid | UGrid, dict]:
+    """Decode one GRIB message (NaN for missing values).
+
+    Regular lat/lon grids give a ``(nj, ni)`` float64 array and a :class:`Grid`;
+    unstructured grids (ICON) a 1-D array over the cells and a :class:`UGrid`.
+    """
     import eccodes
 
     h = eccodes.codes_new_from_message(msg)
     try:
         grid_type = eccodes.codes_get(h, "gridType")
+        if grid_type == "unstructured_grid":
+            values = eccodes.codes_get_values(h).astype("float64")
+            if eccodes.codes_get(h, "bitmapPresent"):
+                values[values == eccodes.codes_get(h, "missingValue")] = np.nan
+            meta = {
+                "shortName": eccodes.codes_get(h, "shortName"),
+                "units": eccodes.codes_get(h, "units"),
+            }
+            return values, UGrid(str(eccodes.codes_get(h, "uuidOfHGrid")), len(values)), meta
         if grid_type != "regular_ll":
             raise ValueError(f"unsupported grid type {grid_type}")
         ni = eccodes.codes_get(h, "Ni")
@@ -216,6 +246,164 @@ def bilinear_weights(grid: Grid, lat: np.ndarray, lon: np.ndarray) -> Weights:
     return Weights(i0, i1, j0, j1, wi, wj, valid)
 
 
+# --------------------------------------------------------------------------- unstructured grids
+
+#: number of nearest cell centres averaged for a station on an unstructured grid
+UGRID_K = 3
+EARTH_KM = 6371.0
+
+
+@dataclass
+class PointWeights:
+    """Weighted mean of ``k`` grid points per station (unstructured grids)."""
+
+    idx: np.ndarray  # (n, k) int64 point indices
+    w: np.ndarray  # (n, k) weights, rows sum to 1 (0 for padding)
+    valid: np.ndarray  # (n,) bool
+
+    def apply(self, field: np.ndarray) -> np.ndarray:
+        v = field[self.idx]
+        w = np.where(np.isfinite(v), self.w, 0.0)
+        tot = w.sum(axis=1)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            out = (w * np.nan_to_num(v)).sum(axis=1) / tot
+        out[(tot <= 0) | ~self.valid] = np.nan
+        return out
+
+
+def _xyz(lat: np.ndarray, lon: np.ndarray) -> np.ndarray:
+    la = np.deg2rad(np.asarray(lat, dtype="float64"))
+    lo = np.deg2rad(np.asarray(lon, dtype="float64"))
+    c = np.cos(la)
+    return np.stack([c * np.cos(lo), c * np.sin(lo), np.sin(la)], axis=1)
+
+
+def unstructured_weights(
+    clat: np.ndarray,
+    clon: np.ndarray,
+    lat: np.ndarray,
+    lon: np.ndarray,
+    k: int = UGRID_K,
+    cell: float = 0.01,
+) -> PointWeights:
+    """Inverse-distance weights of the ``k`` nearest grid points to each station.
+
+    Grid points (``clat``/``clon``, degrees) are bucketed in 3-D unit-vector
+    space with bucket size ``cell`` (0.01 ~ 64 km); each station looks at its
+    own and the 26 neighbouring buckets, so every point within ``cell`` x 6371
+    km is a candidate (ICON's ~13 km cells give dozens). A station on a grid
+    point takes that point's value. No scipy needed.
+    """
+    P = _xyz(clat, clon)
+    Q = _xyz(lat, lon)
+    nq = len(Q)
+    nb = int(np.ceil(2.0 / cell)) + 3
+
+    def key(ijk: np.ndarray) -> np.ndarray:
+        return ((ijk[:, 0] + 1) * nb + ijk[:, 1] + 1) * nb + ijk[:, 2] + 1
+
+    pk = key(np.floor((P + 1.0) / cell).astype(np.int64))
+    order = np.argsort(pk, kind="stable")
+    pks = pk[order]
+    del pk
+    ok_q = np.isfinite(Q).all(axis=1)
+    qi = np.floor((np.where(ok_q[:, None], Q, 0.0) + 1.0) / cell).astype(np.int64)
+    reps, pts = [], []
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                kk = key(qi + np.array([dx, dy, dz]))
+                lo = np.searchsorted(pks, kk, side="left")
+                hi = np.searchsorted(pks, kk, side="right")
+                lens = hi - lo
+                tot = int(lens.sum())
+                if tot == 0:
+                    continue
+                rep = np.repeat(np.arange(nq), lens)
+                within = np.arange(tot) - np.repeat(np.cumsum(lens) - lens, lens)
+                reps.append(rep)
+                pts.append(order[np.repeat(lo, lens) + within])
+    idx = np.zeros((nq, k), dtype=np.int64)
+    w = np.zeros((nq, k), dtype=np.float64)
+    valid = np.zeros(nq, dtype=bool)
+    if reps:
+        rep = np.concatenate(reps)
+        pt = np.concatenate(pts)
+        d2 = ((P[pt] - Q[rep]) ** 2).sum(axis=1)  # squared chord length on the unit sphere
+        srt = np.lexsort((d2, rep))
+        rep, pt, d2 = rep[srt], pt[srt], d2[srt]
+        start = np.searchsorted(rep, np.arange(nq), side="left")
+        end = np.searchsorted(rep, np.arange(nq), side="right")
+        for j in range(k):
+            has = (start + j < end) & ok_q
+            pos = np.minimum(start + j, len(rep) - 1)
+            idx[has, j] = pt[pos[has]]
+            w[has, j] = 1.0 / np.maximum(d2[pos[has]], 1e-18)
+        valid = (end > start) & ok_q
+        # a station (numerically) on a grid point takes that value
+        exact = valid & (d2[np.minimum(start, len(rep) - 1)] < 1e-14)
+        w[exact] = 0.0
+        w[exact, 0] = 1.0
+        s = w.sum(axis=1)
+        w[valid] /= s[valid, None]
+    return PointWeights(idx, w, valid)
+
+
+def _cache_dir() -> Path:
+    return Path(os.environ.get("STATIONTRUTH_CACHE") or Path.home() / ".cache" / "stationtruth")
+
+
+def _stations_key(lat: np.ndarray, lon: np.ndarray) -> str:
+    h = hashlib.sha1()
+    h.update(np.ascontiguousarray(lat, dtype="float64").tobytes())
+    h.update(np.ascontiguousarray(lon, dtype="float64").tobytes())
+    return h.hexdigest()[:16]
+
+
+def fetch_ugrid_coords(source: ModelSource, run: datetime) -> tuple[np.ndarray, np.ndarray, str]:
+    """(clat, clon, uuid) of an unstructured-grid source (ICON) for ``run``."""
+    out = []
+    uuid = ""
+    for which in ("CLAT", "CLON"):
+        blob = http.get(source.coord_url(run, which), timeout=120)  # type: ignore[attr-defined]
+        values, grid, _ = decode_message(bz2.decompress(blob))
+        uuid = getattr(grid, "uuid", "")
+        out.append(values)
+    return out[0], out[1], uuid
+
+
+def ugrid_weights(
+    source: ModelSource,
+    run: datetime,
+    grid: UGrid,
+    lat: np.ndarray,
+    lon: np.ndarray,
+    coords: Callable[[ModelSource, datetime], tuple[np.ndarray, np.ndarray, str]] | None = None,
+    cache_dir: Path | None = None,
+) -> PointWeights:
+    """Station weights for an unstructured grid, cached on disk per grid and station list."""
+    cache_dir = _cache_dir() if cache_dir is None else cache_dir
+    path = cache_dir / f"ugrid-{source.name}-{grid.uuid}-{grid.n}-{_stations_key(lat, lon)}.npz"
+    if path.exists():
+        try:
+            z = np.load(path)
+            return PointWeights(z["idx"], z["w"], z["valid"])
+        except Exception:
+            pass
+    clat, clon, uuid = (coords or fetch_ugrid_coords)(source, run)
+    if len(clat) != grid.n or (uuid and uuid != grid.uuid):
+        raise ValueError(f"{source.name}: coordinate grid {uuid}/{len(clat)} != field grid")
+    pw = unstructured_weights(clat, clon, lat, lon)
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp.npz")
+        np.savez(tmp, idx=pw.idx, w=pw.w, valid=pw.valid)
+        tmp.replace(path)
+    except OSError:
+        pass
+    return pw
+
+
 # --------------------------------------------------------------------------- unit conversion
 
 
@@ -252,9 +440,9 @@ def to_station_values(raw: dict[str, np.ndarray], step: int, n: int) -> dict[str
 
 
 def run_available(source: ModelSource, run: datetime) -> bool:
-    """A run counts as available once the index of its last step exists."""
+    """A run counts as available once the index (or file) of its last step exists."""
     try:
-        return http.exists(source.index_url(run, source.steps[-1]), retries=2, timeout=30)
+        return http.exists(source.availability_url(run), retries=2, timeout=30)
     except Exception:
         return False
 
@@ -281,8 +469,22 @@ class StepResult:
     error: str | None = None
 
 
+def _fetch_files(source: ModelSource, run: datetime, step: int) -> StepResult:
+    """``layout == "files"`` (ICON): one bz2-compressed GRIB file per parameter."""
+    fields: dict[str, bytes] = {}
+    nreq = nbytes = 0
+    for var, param in source.files(step):  # type: ignore[attr-defined]
+        blob = http.get(source.file_url(run, step, param), timeout=120)  # type: ignore[attr-defined]
+        nreq += 1
+        nbytes += len(blob)
+        fields[var] = bz2.decompress(blob)
+    return StepResult(step, fields, nreq, nbytes)
+
+
 def _fetch_step(source: ModelSource, run: datetime, step: int, max_gap: int) -> StepResult:
     try:
+        if source.layout == "files":
+            return _fetch_files(source, run, step)
         index_text = http.get(source.index_url(run, step), timeout=60).decode("utf-8", "replace")
         entries = source.parse_index(index_text)
         selected = source.select(entries, step)
@@ -305,11 +507,14 @@ def fetch_run(
     max_gap: int = 64 * 1024,
     log: Callable[[str], None] | None = print,
     fetch_step: Callable[[ModelSource, datetime, int, int], StepResult] | None = None,
+    ugrid_coords: Callable[[ModelSource, datetime], tuple[np.ndarray, np.ndarray, str]]
+    | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Fetch one run and interpolate every step to the stations.
 
     Returns the contract forecast frame and stats (bytes, requests, seconds,
-    failed steps).
+    failed steps). ``ugrid_coords`` overrides how unstructured-grid coordinates
+    are fetched (tests).
     """
     fetch_step = fetch_step or _fetch_step
     run = run.astimezone(timezone.utc)
@@ -317,7 +522,7 @@ def fetch_run(
     lon = stations["lon"].to_numpy("float64")
     ids = stations["station"].astype(str).to_numpy()
     n = len(ids)
-    weights_cache: dict[Grid, Weights] = {}
+    weights_cache: dict[Grid | UGrid, Weights | PointWeights] = {}
     frames = []
     stats = {"bytes": 0, "requests": 0, "failed_steps": [], "seconds": 0.0}
     t0 = time.monotonic()
@@ -340,7 +545,17 @@ def fetch_run(
                 continue
             w = weights_cache.get(grid)
             if w is None:
-                w = weights_cache[grid] = bilinear_weights(grid, lat, lon)
+                try:
+                    if isinstance(grid, UGrid):
+                        w = ugrid_weights(source, run, grid, lat, lon, coords=ugrid_coords)
+                    else:
+                        w = bilinear_weights(grid, lat, lon)
+                except Exception as exc:
+                    if log:
+                        log(f"  {source.name} +{res.step}h {var}: no station weights: {exc}")
+                    stats["failed_steps"].append(res.step)
+                    return
+                weights_cache[grid] = w
             raw[var] = w.apply(field)
             del field
         vals = to_station_values(raw, res.step, n)
@@ -348,11 +563,17 @@ def fetch_run(
         df["lead_h"] = res.step
         frames.append(df)
 
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futures = [pool.submit(fetch_step, source, run, s, max_gap) for s in source.steps]
-        for k in range(len(futures)):  # in step order; downloads continue meanwhile
-            res = futures[k].result()
-            futures[k] = None  # drop the raw bytes as soon as they are decoded
+    steps = list(source.steps)
+    workers = max(1, workers)
+    ahead = 2 * workers  # bound the downloaded-but-not-decoded steps held in memory
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures: dict[int, object] = {}
+        nxt = 0
+        for k in range(len(steps)):  # in step order; downloads continue meanwhile
+            while nxt < len(steps) and nxt < k + ahead:
+                futures[nxt] = pool.submit(fetch_step, source, run, steps[nxt], max_gap)
+                nxt += 1
+            res = futures.pop(k).result()  # drop the raw bytes once decoded
             handle(res)
             del res
 

@@ -39,6 +39,7 @@ from collections.abc import Callable
 
 import numpy as np
 
+from . import registry
 from .verify import CHUNK, FC_VARS, Table, errors_at
 
 WINDOW_DAYS = 14
@@ -216,20 +217,6 @@ def corrected_table(
     return out, applied
 
 
-def _circ_mean(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Circular mean of two direction arrays (NaN-aware), chunked to bound memory."""
-    out = np.empty(len(a), dtype=np.float32)
-    for i in range(0, len(a), CHUNK):
-        ra = np.deg2rad(a[i : i + CHUNK], dtype=np.float32)
-        rb = np.deg2rad(b[i : i + CHUNK], dtype=np.float32)
-        s = np.nan_to_num(np.sin(ra)) + np.nan_to_num(np.sin(rb))
-        c = np.nan_to_num(np.cos(ra)) + np.nan_to_num(np.cos(rb))
-        d = np.rad2deg(np.arctan2(s, c)) % np.float32(360.0)
-        d[np.isnan(ra) & np.isnan(rb)] = np.nan
-        out[i : i + CHUNK] = d
-    return out
-
-
 BLEND_MAX_AGE_H = 12
 BLEND_MAX_LEAD_H = 72
 
@@ -266,17 +253,19 @@ def _rebase(T: Table, blend_runs: np.ndarray) -> Table:
     return out
 
 
-def blend_table(a: Table | None, b: Table | None) -> Table | None:
-    """Real-time blend of two corrected tables (``ecmwf_bc``, ``gfs_bc``).
+def blend_table(*tables: Table | None) -> Table | None:
+    """Real-time blend of N corrected tables (``ecmwf_bc``, ``gfs_bc``, ``aifs_bc``, ...).
 
-    Blend runs are the union of both models' run times. For blend run R each
+    Blend runs are the union of all models' run times. For blend run R each
     component comes from that model's latest run <= R (at most 12 h older, valid
     time still within its 72 h), matched on (station, valid); ``lead = valid - R``.
-    Values are the mean of the available components (circular mean for wdir),
-    falling back to the single available one. Uses no run later than R, and each
-    component's correction is itself look-ahead free, so the blend is too.
+    Values are the mean of the components available for that row and variable
+    (circular mean for wdir; a model without a variable, e.g. AIFS gust, simply
+    does not contribute), falling back to the single available one. Uses no run
+    later than R, and each component's correction is itself look-ahead free, so
+    the blend is too.
     """
-    tabs = [t for t in (a, b) if t is not None and len(t["sid"])]
+    tabs = [t for t in tables if t is not None and len(t["sid"])]
     if not tabs:
         return None
     blend_runs = np.unique(np.concatenate([t["run"] for t in tabs]))
@@ -285,7 +274,13 @@ def blend_table(a: Table | None, b: Table | None) -> Table | None:
 
 
 def _join_mean(tabs: list[Table]) -> Table:
-    """Row-wise mean of one or two tables on (sid, run, lead)."""
+    """Row-wise mean of any number of tables on (sid, run, lead), NaN-aware.
+
+    The tables are stacked and sorted by key; each group's sums and finite counts
+    come from ``np.add.reduceat``. Output rows are sorted by (sid, run, lead).
+    """
+    if len(tabs) == 1:
+        return dict(tabs[0])
 
     def key(t: Table) -> np.ndarray:
         return (
@@ -294,41 +289,37 @@ def _join_mean(tabs: list[Table]) -> Table:
             | t["lead"].astype(np.int64)
         )
 
-    a = tabs[0]
-    if len(tabs) == 1:
-        return dict(a)
-    b = tabs[1]
-    ka, kb = key(a), key(b)
-    ob = np.argsort(kb)
-    kbs = kb[ob]
-    del kb
-    pos = np.minimum(np.searchsorted(kbs, ka), len(kbs) - 1)
-    hit = kbs[pos] == ka
-    del kbs, ka
-    ia_b = ob[pos[hit]]  # b row for each a row that has one
-    del pos, ob
-    b_only = np.ones(len(b["sid"]), dtype=bool)
-    b_only[ia_b] = False
+    k = np.concatenate([key(t) for t in tabs])
+    order = np.argsort(k, kind="stable")
+    k = k[order]
+    starts = np.flatnonzero(np.r_[True, k[1:] != k[:-1]])
+    del k
+
+    def stacked(c: str) -> np.ndarray:
+        return np.concatenate([t[c] for t in tabs])[order]
+
     out: Table = {}
     for c in ("sid", "run", "lead", "valid"):
-        out[c] = np.concatenate([a[c], b[c][b_only]])
-    oi_a = a["oi"].copy()
-    oi_a[hit & (oi_a < 0)] = b["oi"][ia_b][oi_a[hit] < 0]
-    out["oi"] = np.concatenate([oi_a, b["oi"][b_only]])
+        out[c] = stacked(c)[starts]
+    # every component matched (sid, valid) against the same observations: any
+    # matched index is the match (-1 = none)
+    out["oi"] = np.maximum.reduceat(stacked("oi"), starts)
     for var in FC_VARS:
-        va = a[var]
-        vb = np.full(len(va), np.nan, np.float32)
-        vb[hit] = b[var][ia_b]
+        x = stacked(var)
+        fin = np.isfinite(x)
+        n = np.add.reduceat(fin.astype(np.int32), starts)
         if var == "wdir":
-            m = _circ_mean(va, vb)
+            r = np.deg2rad(np.where(fin, x, 0).astype(np.float64))
+            s = np.add.reduceat(np.where(fin, np.sin(r), 0.0), starts)
+            c = np.add.reduceat(np.where(fin, np.cos(r), 0.0), starts)
+            m = np.rad2deg(np.arctan2(s, c)) % 360.0
         else:
-            with np.errstate(invalid="ignore"):
-                m = np.where(
-                    np.isfinite(va) & np.isfinite(vb),
-                    (va + vb) / 2,
-                    np.where(np.isfinite(va), va, vb),
-                ).astype(np.float32)
-        out[var] = np.concatenate([m, b[var][b_only]])
+            m = np.add.reduceat(np.where(fin, x, 0).astype(np.float64), starts)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                m = m / n
+        m[n == 0] = np.nan
+        out[var] = m.astype(np.float32)
+        del x, fin
     return out
 
 
@@ -340,7 +331,7 @@ def build_models(
     trim_from: int | None = None,
     region: np.ndarray | None = None,
 ) -> tuple[dict[str, Table], dict]:
-    """Raw tables -> all models (raw, *_bc, blend). Raw tables must have ``oi``.
+    """Raw tables -> all models (raw, ``<id>_bc``, blend). Raw tables must have ``oi``.
 
     Corrections are learned from all raw pairs; ``region`` (sid -> region index,
     e.g. ``Dataset.region``) enables the regional prior, else it is global.
@@ -368,18 +359,16 @@ def build_models(
     info: dict = {}
     for m in list(raw):
         T = raw.pop(m)
-        if m in ("ecmwf", "gfs"):
-            tables[f"{m}_bc"], info[f"{m}_bc"] = corrected_table(
-                T, obs, rows_after(T, keep_from), region
-            )
+        if m in registry.RAW_MODELS:
+            bc = registry.get(m).corrected
+            tables[bc], info[bc] = corrected_table(T, obs, rows_after(T, keep_from), region)
         tables[m] = done(m, T)
         del T
-    bl = blend_table(tables.get("ecmwf_bc"), tables.get("gfs_bc"))
-    for m in ("ecmwf_bc", "gfs_bc"):
+    bl = blend_table(*(tables.get(m) for m in registry.CORRECTED_MODELS))
+    for m in registry.CORRECTED_MODELS:
         if m in tables:
             tables[m] = done(m, tables[m])
     if bl is not None:
-        tables["blend"] = done("blend", bl)
+        tables[registry.BLEND] = done(registry.BLEND, bl)
         del bl
-    order = ("ecmwf", "gfs", "ecmwf_bc", "gfs_bc", "blend")
-    return {m: tables[m] for m in order if m in tables}, info
+    return {m: tables[m] for m in registry.MODELS if m in tables}, info

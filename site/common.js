@@ -6,18 +6,73 @@ export const REPO = 'https://github.com/JerryWoof/StationTruth';
 export const METARPARSE = 'https://jerrywoof.github.io/MetarParse/';
 
 /* ------------------------------------------------------------------ models
- * One hue per model family (Okabe–Ito based, colour-blind safe):
- * ECMWF = blue, GFS = orange, Blend = bluish green.
- * Raw model = lighter tint (+ thinner / dashed in charts), corrected = full colour.
+ * REGISTRY mirrors src/stationtruth/registry.py (same ids, order and kind; checked by
+ * tests/test_registry.py). Every raw model <id> gets a bias-corrected <id>_bc, plus
+ * one 'blend' of all corrected models. Each family has its own hue (Okabe–Ito / Tol
+ * based, colour-blind safe): ECMWF IFS blue, GFS orange, ICON olive, AIFS reddish
+ * purple, AIGFS brown, Blend bluish green. Raw model = lighter tint (+ thinner /
+ * dashed in charts), corrected = full colour. AI models carry an "AI" badge.
+ * c: [raw light, corrected light, raw dark, corrected dark]
  */
-export const MODELS = [
-  { id: 'ecmwf', label: 'ECMWF', long: 'ECMWF IFS (raw)', raw: true, family: 'ecmwf' },
-  { id: 'ecmwf_bc', label: 'ECMWF corr.', long: 'ECMWF, bias-corrected', raw: false, family: 'ecmwf' },
-  { id: 'gfs', label: 'GFS', long: 'NOAA GFS (raw)', raw: true, family: 'gfs' },
-  { id: 'gfs_bc', label: 'GFS corr.', long: 'GFS, bias-corrected', raw: false, family: 'gfs' },
-  { id: 'blend', label: 'Blend', long: 'Blend of both corrected models', raw: false, family: 'blend' },
+const REGISTRY = [
+  { id: 'ecmwf', kind: 'physics', label: 'ECMWF', long: 'ECMWF IFS', step: 3, c: ['#5ea3d9', '#0060a8', '#8cc4f2', '#3d9bf0'] },
+  { id: 'gfs', kind: 'physics', label: 'GFS', long: 'NOAA GFS', step: 3, c: ['#e9a33b', '#c45000', '#f5c47a', '#ff8a3d'] },
+  { id: 'icon', kind: 'physics', label: 'ICON', long: 'DWD ICON', step: 3, c: ['#cdbb45', '#7d6e00', '#e6d886', '#d2bd3a'] },
+  { id: 'aifs', kind: 'ai', label: 'AIFS', long: 'ECMWF AIFS', step: 6, c: ['#dc8fbf', '#a3307a', '#f0b3d8', '#e070b4'] },
+  { id: 'aigfs', kind: 'ai', label: 'AIGFS', long: 'NOAA AIGFS', step: 6, c: ['#c8a27c', '#87562a', '#dcc0a0', '#c99563'] },
 ];
-export const MODEL = Object.fromEntries(MODELS.map((m) => [m.id, m]));
+const BLEND_COLOURS = ['#00876a', '#2cc79f'];
+
+/** Every model the site knows, raw/corrected pairs per family, then the blend. */
+const ALL_MODELS = [
+  ...REGISTRY.flatMap((r) => {
+    const base = { family: r.id, kind: r.kind, ai: r.kind === 'ai', step: r.step };
+    return [
+      { ...base, id: r.id, label: r.label, long: `${r.long} (raw)`, raw: true },
+      { ...base, id: `${r.id}_bc`, label: `${r.label} corr.`, long: `${r.long}, bias-corrected`, raw: false },
+    ];
+  }),
+  { id: 'blend', label: 'Blend', long: 'Blend of all corrected models', raw: false, family: 'blend', kind: 'blend', ai: false, step: 3 },
+];
+/** Models shown on this page: all known ones until useModels(meta) narrows them (in place). */
+export const MODELS = [...ALL_MODELS];
+export const MODEL = Object.fromEntries(ALL_MODELS.map((m) => [m.id, m]));
+export const corrected = (id) => `${id}_bc`;
+export const rawOf = (id) => (id.endsWith('_bc') ? id.slice(0, -3) : id);
+
+/** Keep only the models the data has (meta.models), in display order; returns MODELS. */
+export function useModels(meta) {
+  const have = new Set(Array.isArray(meta?.models) ? meta.models : []);
+  const keep = ALL_MODELS.filter((m) => have.has(m.id));
+  if (keep.length) MODELS.splice(0, MODELS.length, ...keep);
+  return MODELS;
+}
+/** Plain-text name for <option>s and canvas labels: "ECMWF AIFS (raw) · AI". */
+export function modelText(id, long = false) {
+  const m = MODEL[id];
+  if (!m) return id;
+  return `${long ? m.long : m.label}${m.ai ? ' · AI' : ''}`;
+}
+/** HTML name with an "AI" badge for machine-learning models. */
+export function modelName(id, long = false) {
+  const m = MODEL[id];
+  if (!m) return esc(id);
+  return `${esc(long ? m.long : m.label)}${m.ai ? '<span class="ai-badge" title="Machine-learning (AI) model">AI</span>' : ''}`;
+}
+
+// Colours and the AI badge style are generated from REGISTRY, so a new model needs no CSS edit.
+(function injectModelStyle() {
+  if (typeof document === 'undefined' || document.getElementById('model-style')) return;
+  const vars = (dark) => [
+    ...REGISTRY.flatMap((r) => [`--m-${r.id}:${r.c[dark ? 2 : 0]}`, `--m-${r.id}_bc:${r.c[dark ? 3 : 1]}`]),
+    `--m-blend:${BLEND_COLOURS[dark ? 1 : 0]}`,
+  ].join(';');
+  const el = document.createElement('style');
+  el.id = 'model-style';
+  el.textContent = `:root{${vars(false)}}@media (prefers-color-scheme: dark){:root{${vars(true)}}}
+.ai-badge{display:inline-block;margin-left:4px;padding:0 4px;border-radius:4px;border:1px solid currentColor;font-size:9px;font-weight:700;line-height:13px;letter-spacing:.04em;vertical-align:1px;color:var(--muted)}`;
+  document.head.appendChild(el);
+}());
 
 export const VARS = {
   t: { label: 'Temperature', short: 'Temp', unit: '°C', range: 4, digits: 1 },
@@ -176,6 +231,7 @@ export function collectingHTML(meta, { always = false } = {}) {
  */
 export const PAGES = [
   { key: 'map', href: './', label: 'Map' },
+  { key: 'forecast', href: 'forecast.html', label: 'Forecast' },
   { key: 'analysis', href: 'analysis.html', label: 'Analysis' },
   { key: 'scores', href: 'scores.html', label: 'Scores' },
   { key: 'tafs', href: 'tafs.html', label: 'TAFs' },
@@ -193,6 +249,9 @@ export function renderNav(active) {
     if (brand) brand.after(nav); else bar.prepend(nav);
   }
   nav.innerHTML = PAGES.map((p) => `<a href="${p.href}"${p.key === active ? ' aria-current="page"' : ''}>${esc(p.label)}</a>`).join('');
+  // the top nav is full on phones: the status page is linked from the page footer
+  const foot = document.querySelector('.foot p:last-of-type');
+  if (foot && active !== 'status' && !foot.querySelector('a[href="status.html"]')) foot.insertAdjacentHTML('beforeend', ' · <a href="status.html">Pipeline status</a>');
   return nav;
 }
 export function initHeader({ active, meta, extra } = {}) {

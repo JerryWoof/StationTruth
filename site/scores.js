@@ -1,6 +1,6 @@
 // StationTruth — scoreboard page
 import {
-  MODELS, MODEL, VARS, isNum, esc, fmt, fmtSigned, fmtInt, fmtCompact,
+  MODELS, MODEL, VARS, isNum, esc, fmt, fmtSigned, fmtInt, fmtCompact, corrected, rawOf, useModels, modelName, modelText,
   getJSON, loadMeta, collectingHTML, setStatus, cssVar, modelColour, onThemeChange, axisStyle, observeWidth, seg, legendSwatch, renderNav,
 } from './common.js?v=__BUILD__';
 
@@ -45,16 +45,31 @@ function renderKpis(b) {
   const all = (m) => b?.[m]?.[state.v]?.all;
   const ok = MODELS.filter((m) => { const a = all(m.id); return a && a.n >= ROW_MIN_N && isNum(a.rmse); });
   const cards = [];
+  const pct = (a, b) => ((b - a) / a) * 100;
+  const pctTxt = (p) => `${p <= 0 ? '−' : '+'}${Math.abs(p).toFixed(0)}%`;
   if (ok.length) {
     const best = ok.reduce((x, y) => (all(y.id).rmse < all(x.id).rmse ? y : x));
-    cards.push(`<div class="kpi"><div class="k">Most accurate</div><div class="v">${legendSwatch(best.id)}${esc(best.label)}</div><div class="s">RMSE ${fmt(all(best.id).rmse)} ${esc(V.unit)}, all lead times</div></div>`);
-    for (const [raw, bc] of [['ecmwf', 'ecmwf_bc'], ['gfs', 'gfs_bc']]) {
-      const a = all(raw); const c = all(bc);
-      if (a && c && a.n >= ROW_MIN_N && c.n >= ROW_MIN_N && a.rmse > 0) {
-        const pct = ((c.rmse - a.rmse) / a.rmse) * 100;
-        const good = pct < -0.5;
-        cards.push(`<div class="kpi"><div class="k">Correction · ${esc(MODEL[raw].label)}</div><div class="v" style="color:${good ? 'var(--good)' : 'var(--text)'}">${pct <= 0 ? '−' : '+'}${Math.abs(pct).toFixed(0)}% RMSE</div><div class="s">${fmt(a.rmse)} → ${fmt(c.rmse)} ${esc(V.unit)}${good ? '' : ' · not helping yet'}</div></div>`);
-      }
+    cards.push(`<div class="kpi"><div class="k">Most accurate</div><div class="v">${legendSwatch(best.id)}${modelName(best.id)}</div><div class="s">RMSE ${fmt(all(best.id).rmse)} ${esc(V.unit)}, all lead times</div></div>`);
+    // AI vs physics: the best raw model of each kind (raw = what the centres publish).
+    // Models are scored on their own samples, so only those whose sample is at least half
+    // the largest one take part (a model with one day of history is not comparable).
+    const nMax = Math.max(0, ...ok.filter((m) => m.raw).map((m) => all(m.id).n));
+    const bestOf = (kind) => ok.filter((m) => m.raw && m.kind === kind && all(m.id).n >= 0.5 * nMax).sort((x, y) => all(x.id).rmse - all(y.id).rmse)[0];
+    const phys = bestOf('physics'); const ai = bestOf('ai');
+    if (phys && ai) {
+      const p = pct(all(phys.id).rmse, all(ai.id).rmse);
+      const aiWins = p < -0.5; const tie = Math.abs(p) <= 0.5;
+      cards.push(`<div class="kpi"><div class="k">AI vs physics (raw)</div><div class="v">${legendSwatch(tie || aiWins ? ai.id : phys.id)}${tie ? 'Tie' : modelName(aiWins ? ai.id : phys.id)}</div><div class="s">${esc(ai.label)} ${fmt(all(ai.id).rmse)} vs ${esc(phys.label)} ${fmt(all(phys.id).rmse)} ${esc(V.unit)} RMSE${tie ? '' : ` · AI ${pctTxt(p)}`}</div></div>`);
+    }
+    // bias correction: RMSE change per model, summarised in one card
+    const ch = MODELS.filter((m) => m.raw).map((m) => {
+      const a = all(m.id); const c = all(corrected(m.id));
+      return a && c && a.n >= ROW_MIN_N && c.n >= ROW_MIN_N && a.rmse > 0 ? [m, pct(a.rmse, c.rmse)] : null;
+    }).filter(Boolean);
+    if (ch.length) {
+      const mean = ch.reduce((x, [, p]) => x + p, 0) / ch.length;
+      const good = mean < -0.5;
+      cards.push(`<div class="kpi"><div class="k">Bias correction</div><div class="v" style="color:${good ? 'var(--good)' : 'var(--text)'}">${pctTxt(mean)} RMSE</div><div class="s">${ch.map(([m, p]) => `${esc(m.label)} ${pctTxt(p)}`).join(' · ')}${good ? '' : ' · not helping yet'}</div></div>`);
     }
   }
   const n = Math.max(0, ...MODELS.map((m) => all(m.id)?.n || 0));
@@ -81,16 +96,19 @@ function renderTable(b) {
   };
   const vsRaw = (m, a) => {
     if (m.raw || !a || !isNum(a.rmse)) return '<td class="muted">–</td>';
-    const refs = m.id === 'blend' ? ['ecmwf', 'gfs'] : [m.id.replace('_bc', '')];
+    // blend: vs the best raw model among those with a comparable sample (n >= half the blend's)
+    const refs = m.id === 'blend'
+      ? MODELS.filter((x) => x.raw && (b?.[x.id]?.[state.v]?.all?.n || 0) >= 0.5 * a.n).map((x) => x.id)
+      : [rawOf(m.id)];
     const ref = Math.min(...refs.map((r) => b?.[r]?.[state.v]?.all?.rmse).filter(isNum));
     if (!Number.isFinite(ref) || ref <= 0) return '<td class="muted">–</td>';
     const pct = ((a.rmse - ref) / ref) * 100;
     return `<td style="color:${pct < -0.5 ? 'var(--good)' : pct > 0.5 ? 'var(--warm)' : 'var(--muted)'};font-weight:600">${pct <= 0 ? '−' : '+'}${Math.abs(pct).toFixed(1)}%</td>`;
   };
   $('summary').innerHTML = `<table class="tbl">
-    <thead><tr><th scope="col">Model</th><th scope="col">n</th><th scope="col">Bias</th><th scope="col">MAE</th><th scope="col">RMSE</th><th scope="col" title="RMSE change vs the raw model (blend: vs the better raw model)">vs raw</th></tr></thead>
+    <thead><tr><th scope="col">Model</th><th scope="col">n</th><th scope="col">Bias</th><th scope="col">MAE</th><th scope="col">RMSE</th><th scope="col" title="RMSE change vs the raw model (blend: vs the best raw model with a comparable sample)">vs raw</th></tr></thead>
     <tbody>${rows.map(([m, a]) => `<tr class="${!a || a.n < ROW_MIN_N ? 'thin' : ''}">
-      <td><span class="mname">${legendSwatch(m.id)}<span class="lname">${esc(m.long)}</span><span class="sname">${esc(m.label)}</span></span></td><td>${fmtInt(a?.n ?? 0)}</td>
+      <td><span class="mname">${legendSwatch(m.id)}<span class="lname">${modelName(m.id, true)}</span><span class="sname">${modelName(m.id)}</span></span></td><td>${fmtInt(a?.n ?? 0)}</td>
       ${cell(a, 'bias', bB, Math.abs, true)}${cell(a, 'mae', bM)}${cell(a, 'rmse', bR)}${vsRaw(m, a)}</tr>`).join('')}</tbody>
     <caption>${esc(regionLabel(state.region))} · ${esc(V.label)} in ${esc(V.unit)} · all lead times 0–72 h · ★ best (smallest |bias|, MAE, RMSE among rows with ≥ ${ROW_MIN_N} pairs).</caption>
   </table>`;
@@ -98,7 +116,7 @@ function renderTable(b) {
 
 /* ------------------------------------------------------------------ charts */
 function renderKey() {
-  $('model-key').innerHTML = MODELS.map((m) => `<button type="button" class="key-btn" data-m="${m.id}" aria-pressed="${!state.hidden.has(m.id)}">${legendSwatch(m.id)}${esc(m.long)}</button>`).join('');
+  $('model-key').innerHTML = MODELS.map((m) => `<button type="button" class="key-btn" data-m="${m.id}" aria-pressed="${!state.hidden.has(m.id)}">${legendSwatch(m.id)}${modelName(m.id, true)}</button>`).join('');
 }
 $('model-key').addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-m]');
@@ -149,7 +167,7 @@ function makeChart(el, b, key) {
       { ...ax, size: 46, label: V.unit, labelSize: 14, labelFont: ax.font, values: (u, v) => v.map((t) => (key === 'bias' ? fmtSigned(t, V.digits === 0 ? 0 : 1) : fmt(t, V.digits === 0 ? 0 : 1))) },
     ],
     series: [{}, ...MODELS.map((m) => ({
-      label: m.label, stroke: modelColour(m.id), width: m.raw ? 1.6 : 2.4, dash: m.raw ? [5, 4] : undefined,
+      label: modelText(m.id), stroke: modelColour(m.id), width: m.raw ? 1.6 : 2.4, dash: m.raw ? [5, 4] : undefined,
       spanGaps: true, show: !state.hidden.has(m.id), points: { show: true, size: m.raw ? 4 : 5, width: 1, fill: modelColour(m.id) },
     }))],
     hooks: {
@@ -162,7 +180,7 @@ function makeChart(el, b, key) {
         const i = u.cursor.idx;
         if (i == null) { tipEl.hidden = true; return; }
         const rows = MODELS.map((m, k) => (u.series[k + 1].show && isNum(u.data[k + 1][i])
-          ? `<div class="tr"><span>${legendSwatch(m.id)}${esc(m.label)}</span><b>${key === 'bias' ? fmtSigned(u.data[k + 1][i]) : fmt(u.data[k + 1][i])} <span class="muted" style="font-weight:500">n ${fmtCompact(ns[k][i])}</span></b></div>` : '')).join('');
+          ? `<div class="tr"><span>${legendSwatch(m.id)}${modelName(m.id)}</span><b>${key === 'bias' ? fmtSigned(u.data[k + 1][i]) : fmt(u.data[k + 1][i])} <span class="muted" style="font-weight:500">n ${fmtCompact(ns[k][i])}</span></b></div>` : '')).join('');
         if (!rows) { tipEl.hidden = true; return; }
         tipEl.innerHTML = `<div class="tt">+${x[i]} h · ${esc(V.unit)}</div>${rows}`;
         tipEl.hidden = false;
@@ -216,6 +234,9 @@ async function boot() {
   renderKey();
   try {
     state.meta = await loadMeta();
+    useModels(state.meta); // only the models the data has
+    for (const id of state.hidden) if (!MODEL[id]) state.hidden.delete(id);
+    renderKey();
     setStatus(state.meta);
     $('collecting').innerHTML = collectingHTML(state.meta);
     state.scores = await getJSON('data/scores.json', { optional: true });

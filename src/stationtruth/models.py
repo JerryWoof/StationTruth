@@ -5,6 +5,16 @@ to read its index format, and how to pick the messages for our variables.
 Internal variable names: ``t``, ``td`` (K), ``u``, ``v``, ``gust`` (m/s),
 ``mslp`` (Pa), ``tcc`` (fraction or %), ``vis`` (m). :mod:`stationtruth.grib`
 converts them to the contract units.
+
+Two download layouts (``ModelSource.layout``):
+
+* ``"index"``: one GRIB2 file per step with a byte-offset index; only the
+  needed messages are fetched with range requests (ECMWF IFS/AIFS, GFS, AIGFS);
+* ``"files"``: one small compressed file per parameter and step (DWD ICON);
+  the whole file is downloaded and decompressed.
+
+Which models exist, their steps and metadata come from
+:mod:`stationtruth.registry`; :data:`SOURCES` maps every registry id to its source.
 """
 
 from __future__ import annotations
@@ -12,6 +22,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
+
+from . import registry
 
 STEPS: tuple[int, ...] = tuple(range(0, 73, 3))
 RUN_HOURS: tuple[int, ...] = (0, 12)
@@ -81,6 +93,7 @@ class ModelSource:
     name: str
     steps: tuple[int, ...] = STEPS
     run_hours: tuple[int, ...] = RUN_HOURS
+    layout: str = "index"
 
     # -- to override
     def grib_url(self, run: datetime, step: int) -> str:  # pragma: no cover - abstract
@@ -96,6 +109,10 @@ class ModelSource:
         raise NotImplementedError  # pragma: no cover - abstract
 
     # -- shared
+    def availability_url(self, run: datetime) -> str:
+        """A URL that exists once the whole run is published (index of the last step)."""
+        return self.index_url(run, self.steps[-1])
+
     def file_name(self, run: datetime) -> str:
         return f"fcst-{self.name}-{run:%Y%m%d%H}.parquet"
 
@@ -104,6 +121,7 @@ class ModelSource:
 class EcmwfOpenData(ModelSource):
     name: str = "ecmwf"
     base: str = "https://data.ecmwf.int/forecasts"
+    model: str = "ifs"  # path component: "ifs" or "aifs-single"
     # internal variable -> ECMWF short name (levtype sfc)
     params: tuple[tuple[str, str], ...] = (
         ("t", "2t"),
@@ -117,7 +135,8 @@ class EcmwfOpenData(ModelSource):
 
     def _stem(self, run: datetime, step: int) -> str:
         return (
-            f"{self.base}/{run:%Y%m%d}/{run:%H}z/ifs/0p25/oper/{run:%Y%m%d%H}0000-{step}h-oper-fc"
+            f"{self.base}/{run:%Y%m%d}/{run:%H}z/{self.model}/0p25/oper/"
+            f"{run:%Y%m%d%H}0000-{step}h-oper-fc"
         )
 
     def grib_url(self, run: datetime, step: int) -> str:
@@ -191,13 +210,115 @@ class GfsAws(ModelSource):
         return out
 
 
-ECMWF = EcmwfOpenData()
-GFS = GfsAws()
-SOURCES: dict[str, ModelSource] = {"ecmwf": ECMWF, "gfs": GFS}
+@dataclass(frozen=True)
+class AigfsAws(GfsAws):
+    """NOAA AIGFS (the operational GraphCast-based AI GFS), surface file on AWS.
+
+    ``aigfs.YYYYMMDD/HH/model/atmos/grib2/aigfs.tHHz.sfc.fFFF.grib2`` (+ ``.idx``),
+    0.25 deg, 6-hourly steps; no gust, cloud or visibility fields.
+    """
+
+    name: str = "aigfs"
+    base: str = "https://noaa-nws-graphcastgfs-pds.s3.amazonaws.com"
+    params: tuple[tuple[str, str, str], ...] = (
+        ("t", "TMP", "2 m above ground"),
+        ("td", "DPT", "2 m above ground"),
+        ("u", "UGRD", "10 m above ground"),
+        ("v", "VGRD", "10 m above ground"),
+        ("mslp", "PRMSL", "mean sea level"),
+    )
+
+    def grib_url(self, run: datetime, step: int) -> str:
+        return (
+            f"{self.base}/aigfs.{run:%Y%m%d}/{run:%H}/model/atmos/grib2/"
+            f"aigfs.t{run:%H}z.sfc.f{step:03d}.grib2"
+        )
+
+
+@dataclass(frozen=True)
+class IconOpenData(ModelSource):
+    """DWD ICON global on its native icosahedral (R3B7, ~13 km) grid.
+
+    One bz2-compressed GRIB2 file per parameter and step:
+    ``{base}/{HH}/{param}/icon_global_icosahedral_single-level_{YYYYMMDDHH}_{SSS}_{PARAM}.grib2.bz2``.
+    The server keeps only the latest run of each hour (about 24 h), so there is
+    no backfill. Cell-centre coordinates are the time-invariant ``CLAT``/``CLON``
+    files of the same run (see :func:`stationtruth.grib.unstructured_weights`).
+    """
+
+    name: str = "icon"
+    base: str = "https://opendata.dwd.de/weather/nwp/icon/grib"
+    layout: str = "files"
+    # internal variable -> ICON parameter name
+    params: tuple[tuple[str, str], ...] = (
+        ("t", "T_2M"),
+        ("td", "TD_2M"),
+        ("u", "U_10M"),
+        ("v", "V_10M"),
+        ("gust", "VMAX_10M"),  # maximum over the previous hour
+        ("mslp", "PMSL"),
+        ("tcc", "CLCT"),
+    )
+
+    def file_url(self, run: datetime, step: int, param: str) -> str:
+        return (
+            f"{self.base}/{run:%H}/{param.lower()}/icon_global_icosahedral_single-level_"
+            f"{run:%Y%m%d%H}_{step:03d}_{param}.grib2.bz2"
+        )
+
+    def coord_url(self, run: datetime, which: str) -> str:
+        """Time-invariant cell-centre latitude (``CLAT``) or longitude (``CLON``)."""
+        return (
+            f"{self.base}/{run:%H}/{which.lower()}/icon_global_icosahedral_time-invariant_"
+            f"{run:%Y%m%d%H}_{which}.grib2.bz2"
+        )
+
+    def files(self, step: int) -> list[tuple[str, str]]:
+        """(internal variable, ICON parameter) to download for ``step``."""
+        # VMAX_10M is a maximum over the hour before the step: none at step 0
+        return [(v, p) for v, p in self.params if not (v == "gust" and step == 0)]
+
+    def availability_url(self, run: datetime) -> str:
+        return self.file_url(run, self.steps[-1], self.params[-1][1])
+
+    def grib_url(self, run: datetime, step: int) -> str:
+        return self.file_url(run, step, self.params[0][1])
+
+    def index_url(self, run: datetime, step: int) -> str:
+        return self.file_url(run, step, self.params[0][1])
+
+
+def _source(info: registry.ModelInfo) -> ModelSource:
+    steps = info.steps
+    if info.id == "ecmwf":
+        return EcmwfOpenData(steps=steps)
+    if info.id == "aifs":
+        # same server and index format as IFS; AIFS has no 10 m gust field
+        return EcmwfOpenData(
+            name="aifs",
+            model="aifs-single",
+            steps=steps,
+            params=tuple(p for p in EcmwfOpenData.params if p[0] != "gust"),
+        )
+    if info.id == "gfs":
+        return GfsAws(steps=steps)
+    if info.id == "aigfs":
+        return AigfsAws(steps=steps)
+    if info.id == "icon":
+        return IconOpenData(steps=steps)
+    raise ValueError(f"no download source for registry model {info.id!r}")  # pragma: no cover
+
+
+SOURCES: dict[str, ModelSource] = {m.id: _source(m) for m in registry.REGISTRY}
+ECMWF = SOURCES["ecmwf"]
+GFS = SOURCES["gfs"]
+AIFS = SOURCES["aifs"]
+ICON = SOURCES["icon"]
+AIGFS = SOURCES["aigfs"]
 
 
 def get_source(name: str) -> ModelSource:
     try:
         return SOURCES[name]
     except KeyError:
-        raise ValueError(f"unknown model {name!r}; choose from {sorted(SOURCES)}") from None
+        raise ValueError(f"unknown model {name!r}; choose from {list(SOURCES)}") from None

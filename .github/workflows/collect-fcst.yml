@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       model:
-        description: "ecmwf, gfs or all"
+        description: "ecmwf, gfs, icon, aifs, aigfs or all (comma list ok)"
         default: all
       runs:
         description: "max new runs per model"
@@ -23,6 +23,9 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
+    # New models per run (local measurements, 2026-10): AIFS ~10 s (58 MB),
+    # AIGFS ~7 s (48 MB), ICON ~1 min (645 MB, per-parameter bz2 files). Even with
+    # --runs 2 for all five models the job stays far below this limit.
     timeout-minutes: 60
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

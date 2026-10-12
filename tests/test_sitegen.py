@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 from synth import make_dataset
 
-from stationtruth import sitegen
+from stationtruth import sitegen, verify
 
 UTC = timezone.utc
 MODELS = ["ecmwf", "gfs", "ecmwf_bc", "gfs_bc", "blend"]
@@ -46,7 +46,8 @@ def _check_score_shape(scores):
     assert set(scores["windows"]) == {"7d", "30d"}
     for w in scores["windows"].values():
         for block in (w["global"], *w["regions"].values()):
-            assert set(block) == set(MODELS)
+            # every registry model keeps the full (possibly empty) shape
+            assert set(block) == set(verify.MODELS)
             for m in block.values():
                 assert set(m) == VARS
                 for v in m.values():

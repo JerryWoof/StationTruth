@@ -81,6 +81,8 @@ def test_scores_recover_known_biases(built):
     for m in g.values():
         for v in m.values():
             a = v["all"]
+            if a["n"] == 0:  # registry model absent from the synthetic data
+                continue
             assert a["rmse"] + 1e-9 >= abs(a["bias"]) and a["mae"] <= a["rmse"] + 1e-9
 
 

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import pytest
 
-from stationtruth import cli, grib, obs, stations
+from stationtruth import cli, grib, obs, registry, stations
 
 UTC = timezone.utc
 NOW = datetime(2026, 10, 12, 16, 7, tzinfo=UTC)
@@ -81,10 +81,10 @@ def test_collect_fcst_local(offline, tmp_path, monkeypatch):
         cli.main(["collect-fcst", "--model", "all", "--runs", "1", "--data-dir", str(tmp_path)])
         == 0
     )
-    assert sorted(fetched) == [
-        ("ecmwf", datetime(2026, 10, 12, tzinfo=UTC)),
-        ("gfs", datetime(2026, 10, 12, tzinfo=UTC)),
-    ]
+    # "all" = every model in the registry
+    assert sorted(fetched) == sorted(
+        (m, datetime(2026, 10, 12, tzinfo=UTC)) for m in registry.RAW_MODELS
+    )
     assert (tmp_path / "fcst-ecmwf-2026101200.parquet").exists()
     assert (tmp_path / "stations.parquet").exists()  # fetched because none was stored
     fetched.clear()

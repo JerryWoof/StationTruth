@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import grib, models
+from . import grib, models, registry
 from . import obs as obs_mod
 from . import stations as stations_mod
 from .storage import STATIONS_FILE, Storage, months_between, open_storage
@@ -103,9 +103,21 @@ def fetch_and_store_run(
     return True
 
 
-def _models(arg: str) -> list[models.ModelSource]:
-    names = list(models.SOURCES) if arg in ("all", "") else [m.strip() for m in arg.split(",")]
-    return [models.get_source(n) for n in names if n]
+def _models(arg: str | None) -> list[models.ModelSource]:
+    """``all`` -> every registry model; else a comma list (``ValueError`` if unknown)."""
+    return [models.get_source(n) for n in registry.parse_list(arg)]
+
+
+def _model_list(arg: str) -> str:
+    """argparse type: validate a model list early, with the valid choices in the error."""
+    try:
+        registry.parse_list(arg)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+    return arg
+
+
+MODEL_HELP = f"{', '.join(registry.RAW_MODELS)} or all (comma list ok)"
 
 
 # --------------------------------------------------------------------------- commands
@@ -159,7 +171,7 @@ def cmd_collect_fcst(args) -> int:
         work = Path(tmp)
         st = load_stations(storage, work)
         existing = stored_names(storage, now - timedelta(days=3), now)
-        for source in _models(args.model):
+        for source in _models(args.model or "all"):
             done = 0
             for run in grib.candidate_runs(source, now, lookback_h=args.lookback_h):
                 if done >= args.runs:
@@ -247,7 +259,9 @@ def cmd_build_site(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="stationtruth",
-        description="Verify ECMWF and GFS forecasts against airport METARs.",
+        description="Verify global weather models ("
+        + ", ".join(m.long for m in registry.REGISTRY)
+        + ") against airport METARs.",
     )
     sub = p.add_subparsers(dest="command", required=True)
 
@@ -274,7 +288,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_collect_obs)
 
     sp = sub.add_parser("collect-fcst", help="fetch the latest model runs not stored yet")
-    sp.add_argument("--model", default="all", help="ecmwf, gfs or all (comma list ok)")
+    sp.add_argument("--model", default="all", type=_model_list, help=MODEL_HELP)
     sp.add_argument("--runs", type=int, default=1, help="max new runs per model")
     sp.add_argument("--lookback-h", type=int, default=48, help="how far back to look for runs")
     data_dir(sp)
@@ -282,7 +296,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("backfill", help="fill history: obs via the Data API plus model runs")
     sp.add_argument("--days", type=float, default=7)
-    sp.add_argument("--models", default="ecmwf,gfs", help="comma list; empty for none")
+    sp.add_argument(
+        "--models", default="all", type=_model_list, help=MODEL_HELP + "; empty for none"
+    )
     sp.add_argument("--no-obs", action="store_true")
     sp.add_argument("--chunk", type=int, default=200, help="station ids per API request")
     sp.add_argument("--pause", type=float, default=0.5, help="seconds between API requests")
