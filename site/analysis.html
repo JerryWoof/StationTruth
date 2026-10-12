@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Analysis — StationTruth</title>
+<meta name="description" content="The real weather map, every hour: ECMWF 2 m temperature and 10 m wind nudged toward ~5,000 airport observations with optimal interpolation, validated at withheld stations.">
+<meta name="theme-color" content="#f8fafc" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b1120" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
+<meta property="og:type" content="website">
+<meta property="og:title" content="StationTruth analysis — the model, corrected by what airports actually report">
+<meta property="og:description" content="Hourly temperature and wind map: ECMWF forecast corrected toward ~5,000 METARs, with an honest check at withheld stations.">
+<meta property="og:url" content="https://jerrywoof.github.io/StationTruth/analysis.html">
+<meta property="og:site_name" content="StationTruth">
+<meta name="twitter:card" content="summary">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
+<link rel="stylesheet" href="style.css?v=__BUILD__">
+<style>
+  /* analysis page only (shared look comes from style.css) */
+  .an-info { width: 360px; }
+  .an-info .headline { font-size: 14.5px; }
+  .an-val { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0 0; }
+  .an-val .kpi { padding: 8px 10px; border-radius: 10px; background: var(--surface-2); }
+  .an-val .kpi .v { font-size: 19px; }
+  .an-val .kpi.good .v { color: var(--good); }
+  .an-how { margin-top: 10px; font-size: 12.5px; color: var(--text-2); }
+  .an-how summary { cursor: pointer; font-weight: 650; color: var(--text); }
+  .an-how ol { margin: 6px 0 0; padding-left: 18px; }
+  .an-how li { margin: 3px 0; line-height: 1.4; }
+  .an-how .muted { font-size: 12px; }
+  .an-controls { width: 380px; }
+  .an-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12.5px; color: var(--text-2); }
+  .an-row label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .an-row input[type="range"] { width: 110px; accent-color: var(--accent); }
+  .an-row input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
+  .an-row .grow { flex: 1; }
+  .readout { font-size: 12px; color: var(--text-2); min-height: 34px; padding: 6px 8px; border-radius: 9px; background: var(--surface-2); font-variant-numeric: tabular-nums; line-height: 1.35; }
+  .readout b { color: var(--text); }
+  .readout .pos { color: var(--muted); }
+  .readout .inc.warm { color: var(--warm); font-weight: 650; }
+  .readout .inc.cold { color: var(--cold); font-weight: 650; }
+  .legend .ticks { position: relative; height: 14px; display: block; }
+  .legend .ticks span { position: absolute; transform: translateX(-50%); }
+  .legend .ticks span:first-child { transform: none; }
+  .legend .ticks span:last-child { transform: translateX(-100%); }
+  .leaflet-image-layer.field { image-rendering: auto; }
+  @media (max-width: 720px) {
+    .an-info { width: auto; }
+    .an-controls { width: auto; }
+    .an-val .kpi .v { font-size: 17px; }
+    .readout { min-height: 0; }
+  }
+</style>
+</head>
+<body>
+<a class="skip" href="#controls">Skip to map controls</a>
+
+<header class="topbar">
+  <a class="brand" href="./" aria-label="StationTruth home">
+    <img class="brand-mark" src="favicon.svg" alt="" width="34" height="34">
+    <div class="brand-text">
+      <p class="h1">StationTruth</p>
+      <p class="status" id="status"><span class="live-dot" aria-hidden="true"></span><span id="updated">Loading…</span><span class="sep" aria-hidden="true">·</span><span id="count"></span></p>
+    </div>
+  </a>
+  <nav class="nav" aria-label="Pages">
+    <a href="./">Map</a>
+    <a href="analysis.html" aria-current="page">Analysis</a>
+    <a href="scores.html">Scores</a>
+    <a href="tafs.html">TAFs</a>
+    <a href="about.html">About</a>
+  </nav>
+  <div class="top-actions">
+    <a class="btn mp-link" href="https://jerrywoof.github.io/MetarParse/" title="Live airport weather, decoded — the sister project" rel="noopener">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/><path d="M12 12 12 3"/></svg>
+      <span class="btn-label">MetarParse Live</span>
+    </a>
+    <a class="btn icon-only" href="https://github.com/JerryWoof/StationTruth" title="StationTruth on GitHub" aria-label="StationTruth on GitHub" rel="noopener">
+      <svg viewBox="0 0 16 16" aria-hidden="true" class="fill"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    </a>
+  </div>
+</header>
+
+<main class="stage">
+  <div id="map" aria-label="World map of the hourly analysis"></div>
+
+  <section class="card info an-info" id="info" aria-label="About this map">
+    <button class="info-toggle" id="info-toggle" type="button" aria-expanded="false" aria-controls="info-body">
+      <span class="ht" id="headline-short">Loading…</span>
+      <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+    </button>
+    <div class="info-body" id="info-body">
+      <p class="headline" id="headline" aria-live="polite">Loading the latest analysis…</p>
+      <div class="an-val" id="val"></div>
+      <p class="headline-sub" id="val-sub"></p>
+      <details class="an-how" id="how">
+        <summary>How it works</summary>
+        <div id="how-body"></div>
+      </details>
+    </div>
+  </section>
+
+  <div class="card controls an-controls" id="controls">
+    <div class="seg full" id="var-seg" role="group" aria-label="Variable">
+      <button type="button" data-v="t">Temperature</button>
+      <button type="button" data-v="wspd">Wind speed</button>
+    </div>
+    <div class="seg full" id="layer-seg" role="group" aria-label="Layer">
+      <button type="button" data-v="analysis">Analysis</button>
+      <button type="button" data-v="background">Model</button>
+      <button type="button" data-v="increment">Correction</button>
+    </div>
+    <div class="an-row">
+      <label for="opacity">Opacity</label>
+      <input id="opacity" type="range" min="0.2" max="1" step="0.05" value="0.75">
+      <span class="grow"></span>
+      <label><input id="dots" type="checkbox"> Stations</label>
+    </div>
+    <div class="readout" id="readout" aria-live="polite">Hover or tap the map for values.</div>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div class="loading" id="loading" role="status"><div class="spinner" aria-hidden="true"></div><span>Loading analysis…</span></div>
+</main>
+
+<noscript><p class="noscript">The analysis map needs JavaScript. The <a href="about.html">About</a> page explains the project.</p></noscript>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script type="module" src="analysis.js?v=__BUILD__"></script>
+</body>
+</html>
