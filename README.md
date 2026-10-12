@@ -18,6 +18,8 @@ so you can see whether the correction actually helps.
 **[✈️ TAFs vs reality](https://jerrywoof.github.io/StationTruth/tafs.html)** ·
 **[📖 Methodology](https://jerrywoof.github.io/StationTruth/about.html)**
 
+[![StationTruth analysis: ECMWF 2 m temperature corrected toward 4,922 airport reports](docs/analysis.png)](https://jerrywoof.github.io/StationTruth/analysis.html)
+
 ## What you can see
 
 - **Error now**: every airport coloured by how wrong each model is right now
