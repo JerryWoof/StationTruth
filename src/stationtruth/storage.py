@@ -30,17 +30,19 @@ RELEASE_BODY = (
     "Data store for StationTruth (not a software release).\n\n"
     "Assets are written automatically by GitHub Actions: hourly METAR observations "
     "(`obs-YYYY-MM-DD.parquet`), ECMWF and GFS runs interpolated to stations "
-    "(`fcst-<model>-YYYYMMDDHH.parquet`) and the station list (`stations.parquet`). "
+    "(`fcst-<model>-YYYYMMDDHH.parquet`), hourly-expanded TAFs (`taf-YYYY-MM-DD.parquet`) "
+    "and the station list (`stations.parquet`). "
     "See docs/DATA.md for the file formats."
 )
 
 _OBS_RE = re.compile(r"^obs-(\d{4})-(\d{2})-(\d{2})\.parquet$")
+_TAF_RE = re.compile(r"^taf-(\d{4})-(\d{2})-(\d{2})\.parquet$")
 _FCST_RE = re.compile(r"^fcst-([a-z0-9_]+)-(\d{4})(\d{2})(\d{2})(\d{2})\.parquet$")
 
 
 def month_of(name: str, today: date | None = None) -> str:
     """Release month ``YYYY-MM`` for an asset name."""
-    m = _OBS_RE.match(name)
+    m = _OBS_RE.match(name) or _TAF_RE.match(name)
     if m:
         return f"{m[1]}-{m[2]}"
     m = _FCST_RE.match(name)
@@ -71,6 +73,9 @@ def parse_name(name: str) -> dict | None:
     m = _OBS_RE.match(name)
     if m:
         return {"kind": "obs", "date": date(int(m[1]), int(m[2]), int(m[3]))}
+    m = _TAF_RE.match(name)
+    if m:
+        return {"kind": "taf", "date": date(int(m[1]), int(m[2]), int(m[3]))}
     m = _FCST_RE.match(name)
     if m:
         run = datetime(int(m[2]), int(m[3]), int(m[4]), int(m[5]), tzinfo=timezone.utc)
@@ -85,7 +90,8 @@ def names_for_window(
 ) -> list[str]:
     """Asset names needed to work on ``[start, end]``.
 
-    Observations for each day in the window, forecast runs whose valid times
+    Observations for each day in the window, TAFs issued from two days before
+    the window start, forecast runs whose valid times
     can fall in the window (initialised up to ``fcst_margin_h`` before the
     start), and the station list.
     """
@@ -98,6 +104,8 @@ def names_for_window(
             continue
         if info["kind"] == "obs" and first_day <= info["date"] <= last_day:
             out.append(name)
+        elif info["kind"] == "taf" and first_day - timedelta(days=2) <= info["date"] <= last_day:
+            out.append(name)  # TAFs issued up to ~30 h before the window verify inside it
         elif info["kind"] == "fcst" and run_start <= info["run"] <= end:
             out.append(name)
         elif info["kind"] == "stations":

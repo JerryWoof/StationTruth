@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TAF vs reality — StationTruth</title>
+<meta name="description" content="How good are official airport forecasts (TAFs)? Every hour of every TAF compared with what the airport's METARs later reported: flight-category hit rate, contingency table, and POD, FAR and CSI for IFR conditions by lead time.">
+<meta name="theme-color" content="#f8fafc" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b1120" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
+<meta property="og:type" content="website">
+<meta property="og:title" content="TAF vs reality — how good are airport forecasts?">
+<meta property="og:description" content="Official terminal aerodrome forecasts verified hour by hour against METARs at ~3,000 airports.">
+<meta property="og:url" content="https://jerrywoof.github.io/StationTruth/tafs.html">
+<meta property="og:site_name" content="StationTruth">
+<meta name="twitter:card" content="summary">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
+<link rel="stylesheet" href="style.css?v=__BUILD__">
+<style>
+  /* page-specific: TAF vs reality */
+  :root { --s-csi: #0060a8; --s-pod: #00876a; --s-far: #c45000; --s-hit: #0060a8; --s-hss: #6b4fbb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --s-csi: #3d9bf0; --s-pod: #2cc79f; --s-far: #ff8a3d; --s-hit: #3d9bf0; --s-hss: #b49cff; }
+  }
+  .ct { border-collapse: separate; border-spacing: 3px; font-size: 13px; font-variant-numeric: tabular-nums; margin: 0 auto; }
+  .ct th { font-size: 11px; font-weight: 650; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; padding: 4px 6px; white-space: nowrap; }
+  .ct th.axis { text-transform: none; letter-spacing: 0; font-size: 12px; color: var(--text-2); }
+  .ct td { width: 92px; height: 54px; text-align: center; border-radius: 8px; padding: 4px; color: var(--text); position: relative; }
+  .ct td .c { display: block; font-weight: 700; font-size: 14px; }
+  .ct td .p { display: block; font-size: 11.5px; color: var(--text-2); }
+  .ct td.diag { box-shadow: inset 0 0 0 2px var(--good); }
+  .ct td.tot { background: transparent; color: var(--muted); height: auto; }
+  .ct-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12px; color: var(--muted); margin-top: 10px; justify-content: center; }
+  .ct-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -2px; margin-right: 4px; }
+  .cat { display: inline-block; font: 700 11px var(--mono); padding: 1px 6px; border-radius: 5px; color: #fff; }
+  .cat.VFR { background: #15803d; } .cat.MVFR { background: #1d4ed8; } .cat.IFR { background: #b91c1c; } .cat.LIFR { background: #a21caf; }
+  .score-key { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: var(--text-2); margin: 0 0 8px; }
+  .score-key span { display: inline-flex; align-items: center; gap: 6px; }
+  .score-key .dash { display: inline-block; width: 16px; border-top: 2px dashed var(--muted); }
+  .score-key .solid { display: inline-block; width: 16px; border-top: 3px solid var(--muted); }
+  .rank-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+  .rank-grid .panel { min-width: 0; }
+  .rank-grid h3 { margin: 0 0 8px; font-size: 14px; }
+  .rank-grid .tbl td:nth-child(2) { text-align: left; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+  .rank-grid .tbl th:nth-child(2) { text-align: left; }
+  .rank-grid .icao { font-size: 12px; }
+  .bar { display: inline-block; height: 8px; border-radius: 4px; background: var(--s-csi); vertical-align: middle; margin-left: 6px; }
+  .explain-grid.two { grid-template-columns: repeat(2, 1fr); }
+  .explain-grid .panel p + p { margin-top: 8px; }
+  .formula { font: 12.5px var(--mono); color: var(--muted); }
+  @media (max-width: 860px) {
+    .rank-grid, .explain-grid.two { grid-template-columns: minmax(0, 1fr); }
+  }
+  @media (max-width: 720px) {
+    .ct { border-spacing: 2px; font-size: 12px; }
+    .ct td { width: auto; min-width: 54px; height: 46px; padding: 2px; }
+    .ct td .c { font-size: 12.5px; }
+    .ct th { padding: 2px 3px; }
+    .rank-grid .tbl td:nth-child(2) { max-width: 110px; }
+  }
+  @media (max-width: 480px) {
+    .ct .totc { display: none; }
+    .ct td { min-width: 50px; }
+    .ct th.axis { font-size: 11px; }
+  }
+</style>
+</head>
+<body class="doc">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="brand" href="./" aria-label="StationTruth home">
+    <img class="brand-mark" src="favicon.svg" alt="" width="34" height="34">
+    <div class="brand-text">
+      <p class="h1">StationTruth</p>
+      <p class="status" id="status"><span class="live-dot" aria-hidden="true"></span><span id="updated">Loading…</span><span class="sep" aria-hidden="true">·</span><span id="count"></span></p>
+    </div>
+  </a>
+  <nav class="nav" aria-label="Pages">
+    <a href="./">Map</a>
+    <a href="analysis.html">Analysis</a>
+    <a href="scores.html">Scores</a>
+    <a href="tafs.html" aria-current="page">TAFs</a>
+    <a href="about.html">About</a>
+  </nav>
+  <div class="top-actions">
+    <a class="btn mp-link" href="https://jerrywoof.github.io/MetarParse/" title="Live airport weather, decoded — the sister project" rel="noopener">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/><path d="M12 12 12 3"/></svg>
+      <span class="btn-label">MetarParse Live</span>
+    </a>
+    <a class="btn icon-only" href="https://github.com/JerryWoof/StationTruth" title="StationTruth on GitHub" aria-label="StationTruth on GitHub" rel="noopener">
+      <svg viewBox="0 0 16 16" aria-hidden="true" class="fill"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    </a>
+  </div>
+</header>
+
+<main class="page" id="main">
+  <h1>TAF vs reality</h1>
+  <p class="lede">A TAF is the official forecast for an airport, written by forecasters (or produced automatically) and used by pilots and dispatchers to plan flights. Here every hour of every TAF is checked against what the airport's own METAR reports showed when that hour came. Few places publish this.</p>
+  <div id="collecting"></div>
+
+  <div class="toolbar" role="group" aria-label="Filters">
+    <div class="field"><span id="lbl-win">Window</span>
+      <div class="seg" id="win-seg" role="group" aria-labelledby="lbl-win">
+        <button type="button" data-v="7d">Last 7 days</button><button type="button" data-v="30d">Last 30 days</button>
+      </div>
+    </div>
+    <label class="field"><span>Region</span><select class="select" id="region-sel"><option value="global">Global</option></select></label>
+    <div class="field"><span id="lbl-obs">Compared with</span>
+      <div class="seg" id="obs-seg" role="group" aria-labelledby="lbl-obs">
+        <button type="button" data-v="worst" title="Worst flight category in any METAR or SPECI during the hour">Worst in the hour</button><button type="button" data-v="nominal" title="The routine METAR nearest the top of the hour">Hourly METAR</button>
+      </div>
+    </div>
+    <div class="field"><span id="lbl-tempo">TEMPO / PROB groups</span>
+      <div class="seg" id="tempo-seg" role="group" aria-labelledby="lbl-tempo">
+        <button type="button" data-v="prev">Ignore</button><button type="button" data-v="tempo">Count as forecast</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <h2>Forecast vs observed flight category</h2>
+  <div class="panel">
+    <div class="tbl-wrap" id="ct"></div>
+    <p class="note" id="ct-note"></p>
+  </div>
+
+  <h2>IFR or worse, by lead time</h2>
+  <div class="charts">
+    <section class="panel" aria-labelledby="h-ifr">
+      <h3 id="h-ifr">POD, FAR and CSI for IFR-or-worse hours</h3>
+      <p class="sub">Higher is better for POD and CSI, lower for FAR. Solid: prevailing forecast only; dashed: TEMPO/PROB groups count too.</p>
+      <div class="score-key" id="ifr-key"></div>
+      <div class="chart" id="chart-ifr"></div>
+    </section>
+    <section class="panel" aria-labelledby="h-hit">
+      <h3 id="h-hit">Category hit rate and skill</h3>
+      <p class="sub">Hit rate: share of hours in the right category. Heidke skill: 1 perfect, 0 no better than chance.</p>
+      <div class="score-key" id="hit-key"></div>
+      <div class="chart" id="chart-hit"></div>
+    </section>
+  </div>
+  <p class="note" id="lead-note"></p>
+  <div class="panel" style="margin-top:16px">
+    <div class="tbl-wrap" id="lead-table"></div>
+  </div>
+
+  <h2>Airports</h2>
+  <p class="note" id="rank-note" style="margin:0 0 12px"></p>
+  <div class="rank-grid">
+    <section class="panel"><h3>Best 15 by CSI</h3><div class="tbl-wrap" id="rank-top"></div></section>
+    <section class="panel"><h3>Worst 15 by CSI</h3><div class="tbl-wrap" id="rank-bottom"></div></section>
+  </div>
+
+  <h2 id="what">What do these numbers mean?</h2>
+  <div class="callout">
+    <b>Flight categories</b> sum up how easy it is to land: <span class="cat VFR">VFR</span> ceiling above 3,000 ft and visibility over 5 miles,
+    <span class="cat MVFR">MVFR</span> ceiling 1,000–3,000 ft or 3–5 miles, <span class="cat IFR">IFR</span> ceiling 500–999 ft or 1–3 miles,
+    <span class="cat LIFR">LIFR</span> below 500 ft or under 1 mile. “IFR or worse” is when instrument procedures (and alternates, fuel, delays) come into play — the forecasts that matter most.
+  </div>
+  <div class="explain-grid">
+    <div class="panel"><h3>Hit rate</h3><p>The share of hours where the TAF's main forecast had the right category. Easy to read but flattered by long fair-weather spells: forecasting VFR everywhere would already score high.</p></div>
+    <div class="panel"><h3>Heidke skill score</h3><p>The hit rate after removing the hits you would get by chance with the same mix of forecasts and observations. 1 is perfect, 0 is no skill, below 0 worse than chance.</p></div>
+    <div class="panel"><h3>POD — probability of detection</h3><p>Of the hours that really were IFR or worse, how many the TAF had forecast. 0.7 = 7 in 10 caught. <span class="formula">hits / (hits + misses)</span></p></div>
+    <div class="panel"><h3>FAR — false alarm ratio</h3><p>Of the hours the TAF forecast IFR or worse, how many turned out better. Lower is better. <span class="formula">false alarms / (hits + false alarms)</span></p></div>
+    <div class="panel"><h3>CSI — critical success index</h3><p>One number that punishes both misses and false alarms, ignoring the many easy “nothing happened” hours. <span class="formula">hits / (hits + misses + false alarms)</span></p></div>
+    <div class="panel"><h3>Frequency bias</h3><p>How often IFR was forecast compared with how often it happened. 1 = as often as observed; above 1 over-forecast (cautious), below 1 under-forecast. <span class="formula">(hits + false alarms) / (hits + misses)</span></p></div>
+  </div>
+  <div class="explain-grid two" style="margin-top:12px">
+    <div class="panel"><h3>TEMPO and PROB groups</h3><p>TAFs add temporary conditions on top of the main forecast: <code>TEMPO</code> (brief spells), <code>PROB30</code>/<code>PROB40</code> (30–40 % chance). With “Count as forecast” an hour counts as forecast IFR if any of these groups active that hour says so. That catches more events (POD up) but cries wolf more often (FAR up).</p></div>
+    <div class="panel"><h3>How hours are matched</h3><p>Each TAF is split into clock hours. <code>FM</code> changes apply from their time; <code>BECMG</code> changes count from the <b>end</b> of their period. Each hour is compared with the worst category in any METAR or SPECI during that hour, or with the routine METAR nearest the top of the hour. Every TAF covering an hour counts, at its own lead time. Hours before a TAF was issued are never scored.</p></div>
+  </div>
+
+  <footer class="foot">
+    <p>TAFs and observations: <a href="https://aviationweather.gov" rel="noopener">aviationweather.gov</a> (NOAA), decoded with <a href="https://github.com/JerryWoof/MetarParse" rel="noopener">MetarParse</a>. Method: <a href="https://github.com/JerryWoof/StationTruth/blob/main/docs/TAF.md" rel="noopener">docs/TAF.md</a>.</p>
+    <p>Not for operational use. <a href="https://github.com/JerryWoof/StationTruth" rel="noopener">StationTruth on GitHub</a> · sister project <a href="https://jerrywoof.github.io/MetarParse/" rel="noopener">MetarParse Live</a>.</p>
+  </footer>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.iife.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script type="module" src="tafs.js?v=__BUILD__"></script>
+</body>
+</html>
