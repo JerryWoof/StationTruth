@@ -52,7 +52,7 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
-from . import correct, sitegen, verify
+from . import correct, registry, sitegen, verify
 from .regions import REGIONS
 from .verify import NAT, Table, iso, run_id
 
@@ -76,8 +76,15 @@ SERIES_VARS: tuple[str, ...] = ("t", "td", "wspd", "wdir", "gust", "mslp", "tcc"
 SKILL_VARS: tuple[str, ...] = ("t", "td", "wspd", "gust", "mslp", "wdir")
 SKILL_MIN_N = 20
 SCALE = sitegen.SCALE
+
+
 #: human-readable model names for the summary line
-LABELS = {"ecmwf": "ECMWF", "gfs": "GFS", "ecmwf_bc": "corrected ECMWF", "gfs_bc": "corrected GFS"}
+def _label(model_id: str) -> str:
+    raw = registry.raw_of(model_id)
+    if raw is None:
+        return model_id
+    name = registry.get(raw).label
+    return f"corrected {name}" if model_id != raw else name
 
 
 def _bucket_centres() -> np.ndarray:
@@ -369,10 +376,10 @@ def skill_summary(skill: dict, paired: dict, s: int) -> dict | None:
         vs[m] = round(100 * (1 - sab[s] / sam[s])) + 0
         common[m] = int(n[s])
     parts = []
-    for m in ("ecmwf", "gfs"):
+    for m in registry.RAW_MODELS:
         if m in vs:
             p = vs[m]
-            name = LABELS.get(m, m)
+            name = _label(m)
             parts.append(
                 f"{abs(p)}% {'better' if p > 0 else 'worse'} than {name}"
                 if p

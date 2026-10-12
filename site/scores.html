@@ -17,6 +17,48 @@
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
 <link rel="stylesheet" href="style.css?v=__BUILD__">
+<style>
+  /* head-to-head section (compare.js) */
+  .h2h-models { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
+  .h2h-models .select { min-width: 150px; }
+  .h2h-swap { height: 36px; }
+  .verdict { font-size: 17px; line-height: 1.5; color: var(--text); margin: 0; }
+  .verdict b { font-weight: 750; }
+  .verdict .win { color: var(--good); }
+  .verdict .lose { color: var(--warm); }
+  .verdict-sub { font-size: 13px; color: var(--muted); margin: 6px 0 0; }
+  .h2h-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-top: 16px; }
+  .h2h-grid .panel { min-width: 0; }
+  .h2h-grid .panel h3 { margin: 0 0 2px; font-size: 14px; }
+  .h2h-grid .panel .sub { margin: 0 0 10px; font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+  .sig { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 999px; white-space: nowrap; }
+  .sig.win { color: var(--good); background: var(--good-soft); }
+  .sig.lose { color: var(--warm); background: color-mix(in srgb, var(--warm) 13%, transparent); }
+  .sig.tie { color: var(--muted); background: var(--surface-2); }
+  .mx { border-collapse: separate; border-spacing: 3px; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  .mx th { font-size: 11px; font-weight: 650; color: var(--text-2); padding: 3px 5px; white-space: nowrap; }
+  .mx thead th { vertical-align: bottom; }
+  .mx tbody th { text-align: right; }
+  .mx td { min-width: 62px; height: 40px; text-align: center; border-radius: 7px; padding: 2px 4px; cursor: pointer; border: 0; }
+  .mx td.self { background: transparent; cursor: default; color: var(--muted); }
+  .mx td.win { background: var(--good-soft); color: var(--good); font-weight: 700; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--good) 35%, transparent); }
+  .mx td.lose { background: color-mix(in srgb, var(--warm) 12%, transparent); color: var(--warm); font-weight: 700; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warm) 35%, transparent); }
+  .mx td.tie { background: var(--surface-2); color: var(--muted); }
+  .mx td.na { background: transparent; color: var(--muted); cursor: default; }
+  .mx td.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .mx td small { display: block; font-size: 10px; font-weight: 500; opacity: .85; }
+  .mx-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .mx-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -2px; margin-right: 4px; }
+  .h2h-tbl .ci { color: var(--muted); font-size: 11.5px; font-weight: 500; }
+  @media (max-width: 860px) { .h2h-grid { grid-template-columns: minmax(0, 1fr); } }
+  @media (max-width: 720px) {
+    .h2h-models { flex: 1 1 100%; }
+    .h2h-models .field { flex: 1 1 0; min-width: 0; }
+    .h2h-models .select { min-width: 0; width: 100%; }
+    .verdict { font-size: 15.5px; }
+    .mx td { min-width: 44px; height: 36px; font-size: 11.5px; }
+  }
+</style>
 </head>
 <body class="doc">
 <a class="skip" href="#main">Skip to content</a>
@@ -93,6 +135,63 @@
     and rows with fewer than 100 pairs are greyed out. Small regions (Polar, Oceania) and rarely reported variables (gusts, sea-level pressure) have far fewer pairs than global temperature.
   </div>
 
+  <h2 id="h2h">Head to head</h2>
+  <p class="lede" style="font-size:15.5px">Is one model really better than another, or is the gap just noise? Here two models are compared <b>only on the forecasts both made</b> — same airport, same hour, same forecast lead — and the difference comes with a 95% confidence interval.</p>
+  <div class="toolbar" role="group" aria-label="Head-to-head filters">
+    <div class="h2h-models">
+      <label class="field"><span>Model A</span><select class="select" id="h2h-a"></select></label>
+      <button type="button" class="btn small h2h-swap" id="h2h-swap" title="Swap A and B" aria-label="Swap model A and model B">⇄</button>
+      <label class="field"><span>Model B</span><select class="select" id="h2h-b"></select></label>
+    </div>
+    <div class="field"><span id="lbl-h2h-var">Variable</span>
+      <div class="seg" id="h2h-var" role="group" aria-labelledby="lbl-h2h-var" style="flex-wrap:wrap">
+        <button type="button" data-v="t">Temp</button><button type="button" data-v="td">Dew pt</button><button type="button" data-v="wspd">Wind</button><button type="button" data-v="gust">Gust</button><button type="button" data-v="mslp">Pressure</button>
+      </div>
+    </div>
+    <div class="field"><span id="lbl-h2h-win">Window</span>
+      <div class="seg" id="h2h-win" role="group" aria-labelledby="lbl-h2h-win">
+        <button type="button" data-v="7d">7 days</button><button type="button" data-v="30d">30 days</button>
+      </div>
+    </div>
+    <label class="field"><span>Region</span><select class="select" id="h2h-region"></select></label>
+  </div>
+  <div class="panel" aria-live="polite">
+    <p class="verdict" id="h2h-verdict">Loading comparisons…</p>
+    <p class="verdict-sub" id="h2h-verdict-sub"></p>
+  </div>
+  <div class="h2h-grid">
+    <section class="panel" aria-labelledby="h-h2h-chart">
+      <h3 id="h-h2h-chart">Difference A − B by lead time</h3>
+      <p class="sub" id="h2h-chart-sub">RMSE of A minus RMSE of B on their common sample. Below zero: A is more accurate. Whiskers: 95% confidence interval.</p>
+      <div class="seg small" id="h2h-metric" role="group" aria-label="Score" style="margin-bottom:8px">
+        <button type="button" data-v="rmse">RMSE</button><button type="button" data-v="mae">MAE</button>
+      </div>
+      <div class="chart" id="h2h-chart" style="min-height:240px"></div>
+    </section>
+    <section class="panel" aria-labelledby="h-h2h-tbl">
+      <h3 id="h-h2h-tbl">By lead time</h3>
+      <p class="sub">Common pairs, both scores and the difference with its 95% interval; last column: share of airports where A has the lower RMSE.</p>
+      <div class="tbl-wrap" id="h2h-table"></div>
+    </section>
+  </div>
+
+  <h3 style="margin-top:26px">All pairs</h3>
+  <p class="note" style="margin-top:0;font-size:13px">Each cell: RMSE of the <b>row</b> model minus RMSE of the <b>column</b> model (all lead times, selected variable, window and region), each pair on its own common sample. Click a cell to open that pair above.</p>
+  <div class="panel" style="margin-top:8px">
+    <div class="tbl-wrap" id="h2h-matrix"></div>
+    <div class="mx-legend"><span><i style="background:var(--good-soft);box-shadow:inset 0 0 0 1px var(--good)"></i>row model significantly better</span><span><i style="background:color-mix(in srgb, var(--warm) 14%, transparent);box-shadow:inset 0 0 0 1px var(--warm)"></i>row model significantly worse</span><span><i style="background:var(--surface-2);box-shadow:inset 0 0 0 1px var(--border-strong)"></i>no significant difference / interval not available</span></div>
+  </div>
+
+  <h3 style="margin-top:26px">Ranking on one common sample</h3>
+  <p class="note" style="margin-top:0;font-size:13px" id="h2h-common-note">Every model scored on exactly the same forecasts: the hours and airports that all of them verified.</p>
+  <div class="panel" style="margin-top:8px"><div class="tbl-wrap" id="h2h-common"></div></div>
+
+  <div class="explain-grid" style="margin-top:16px">
+    <div class="panel"><h3>Why a common sample?</h3><p>Models are not always verified on the same hours: one may have started later, skipped a run, or lack a gust forecast. A model scored on calmer days looks better than it is. Comparing only forecasts that <b>both</b> models made for the same airport, hour and lead time removes that advantage.</p></div>
+    <div class="panel"><h3>What the interval means</h3><p>The 95% confidence interval is the range the true difference most plausibly lies in, given how much the result changes from day to day. If it does not include zero, the difference is <b>significant</b>: it is very unlikely to be luck. Otherwise we call it “no significant difference”.</p></div>
+    <div class="panel"><h3>How it is computed</h3><p>Errors on the same day and in the same region move together (one weather system), so pairs are not independent. We resample whole days per region (runs of consecutive days, a block bootstrap, 2,000 times) to get the interval. With only a few days of data the intervals are rough. Details in <a href="https://github.com/JerryWoof/StationTruth/blob/main/docs/DATA.md#comparejson" rel="noopener">DATA.md</a>.</p></div>
+  </div>
+
   <h2 id="what">What do these numbers mean?</h2>
   <div class="explain-grid">
     <div class="panel"><h3>Bias</h3><p>The average of <i>forecast − observed</i>. It tells you whether a model <b>leans</b> one way: +0.8 °C means it is, on average, 0.8 °C too warm. Errors in both directions cancel, so a model can have zero bias and still be poor.</p></div>
@@ -103,12 +202,13 @@
 
   <footer class="foot">
     <p>Observations: <a href="https://aviationweather.gov" rel="noopener">aviationweather.gov</a> (NOAA), decoded with <a href="https://github.com/JerryWoof/MetarParse" rel="noopener">MetarParse</a>.
-      Forecasts: Source <a href="https://www.ecmwf.int" rel="noopener">ECMWF</a>, <a href="https://creativecommons.org/licenses/by/4.0/" rel="noopener">CC BY 4.0</a> (interpolated and bias-corrected by StationTruth); NOAA GFS (public domain).</p>
+      Forecasts: Source <a href="https://www.ecmwf.int" rel="noopener">ECMWF</a>, <a href="https://creativecommons.org/licenses/by/4.0/" rel="noopener">CC BY 4.0</a> (interpolated and bias-corrected by StationTruth), IFS and AIFS; NOAA GFS and AIGFS (public domain); Source: <a href="https://www.dwd.de" rel="noopener">Deutscher Wetterdienst</a> (ICON).</p>
     <p>Not for operational use. <a href="https://github.com/JerryWoof/StationTruth" rel="noopener">StationTruth on GitHub</a> · sister project <a href="https://jerrywoof.github.io/MetarParse/" rel="noopener">MetarParse Live</a>.</p>
   </footer>
 </main>
 
 <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.iife.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script type="module" src="scores.js?v=__BUILD__"></script>
+<script type="module" src="compare.js?v=__BUILD__"></script>
 </body>
 </html>

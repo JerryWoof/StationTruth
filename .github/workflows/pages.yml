@@ -54,11 +54,17 @@ jobs:
           key: data-${{ github.run_id }}
       - name: Build site data
         run: stationtruth build-site --data-dir data --out site/data
+      - name: Build airport forecasts
+        run: python -m stationtruth.forecastgen --data-dir data --out site/data
       - name: Build TAF verification
         run: python -m stationtruth.tafverify --data-dir data --out site/data
       # Needs a reachable ECMWF run; the rest of the site still deploys without it.
       - name: Build analysis
         run: python -m stationtruth.analysis --data-dir data --out site/data/analysis
+        continue-on-error: true
+      # Last, so the status page sees the TAF scores and the analysis too.
+      - name: Pipeline health
+        run: python -m stationtruth.health --data-dir data --out site/data
         continue-on-error: true
       - name: Stamp build id (cache busting)
         run: sed -i "s/__BUILD__/${GITHUB_SHA::12}-${GITHUB_RUN_ID}/g" site/*.html site/*.js

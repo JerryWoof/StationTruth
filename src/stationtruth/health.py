@@ -55,7 +55,7 @@ OBS_DOWN_MIN = 180
 RUN_DAYS = 7
 CYCLE_HOURS: tuple[int, ...] = (0, 12)
 #: a cycle is "due" once it is this many hours old (dissemination + collection)
-GRACE_H: dict[str, int] = {"ecmwf": 12, "gfs": 10}
+GRACE_H: dict[str, int] = {"ecmwf": 12, "gfs": 10, "aifs": 10, "aigfs": 10, "icon": 8}
 DEFAULT_GRACE_H = 12
 RUN_DOWN_H = 36
 TAF_STALE_H = 8

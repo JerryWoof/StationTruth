@@ -1,7 +1,10 @@
 """Build the static site data (docs/DATA.md, "Site data").
 
 ``build(data_dir, out_dir, now)`` writes ``meta.json``, ``scores.json``,
-``latest.json`` and ``stations/<ID>.json`` into ``out_dir``.
+``latest.json`` and ``stations/<ID>.json`` into ``out_dir``, then the optional
+``compare.json`` (stationtruth.compare) and ``health.json``
+(stationtruth.health); those two never fail the build, their errors go to
+``meta.json`` ``optional_errors``.
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from . import correct, verify
+from . import compare, correct, health, verify
 from .verify import FC_VARS, MODELS, NAT, Table, iso, run_id
 
 log = logging.getLogger(__name__)
@@ -105,7 +108,7 @@ def forecast_at(T: Table, sids: np.ndarray, times: np.ndarray, n_sid: int) -> pd
     pre = np.flatnonzero(T["run"] >= t_min - (verify.MAX_LEAD + 3) * 60)
     t = tq[T["sid"][pre]]
     valid = T["valid"][pre].astype(np.int64)
-    ok = (t != NAT) & (T["run"][pre] <= t) & (np.abs(valid - t) <= 180)
+    ok = (t != NAT) & (T["run"][pre] <= t) & (np.abs(valid - t) <= 360)  # 6-hourly AI models
     rows = pre[ok]
     cols = ["sid", "run", "valid", "lead", *FC_VARS]
     df = pd.DataFrame({c: T[c][rows] for c in cols})
@@ -377,6 +380,22 @@ def _safe_name(s: str) -> str | None:
 
 # ------------------------------------------------------------------- build
 
+_FAILED = object()
+
+
+def _optional(errors: dict, step: str, fn, *args):
+    """Run an optional build step; on failure log it, note it in ``errors`` and go on."""
+    try:
+        return fn(*args)
+    except Exception as exc:  # never let an optional page break the main site
+        log.exception("optional step %s failed", step)
+        errors.setdefault(step, f"{type(exc).__name__}: {exc}"[:300])
+        return _FAILED
+
+
+def _new_comparer(ds: verify.Dataset) -> compare.Comparer:
+    return compare.Comparer(ds.obs, ds.region, ds.now)
+
 
 def build(data_dir: Path, out_dir: Path, now: datetime | None = None) -> dict:
     """Verify, correct and write all site JSON. Returns a small summary."""
@@ -409,14 +428,37 @@ def build(data_dir: Path, out_dir: Path, now: datetime | None = None) -> dict:
     fcst_rows = {m: int(len(T["sid"])) for m, T in ds.fc.items()}
     keep_from = ds.now - max(verify.WINDOWS.values()) * 1440
     scorer = verify.Scorer(ds.obs, ds.region, ds.now)
+    optional_errors: dict[str, str] = {}
+    comparer = _optional(optional_errors, "compare", _new_comparer, ds)
+    if comparer is _FAILED:
+        comparer = None
+
+    def on_table(m: str, T: Table) -> None:
+        scorer.add(m, T)
+        nonlocal comparer
+        if (
+            comparer is not None
+            and _optional(optional_errors, "compare", comparer.add, m, T) is _FAILED
+        ):
+            comparer = None  # free what it collected; the main build goes on
+
     # scores are accumulated per model on complete tables; afterwards only the last
     # week (+ margin) is kept for latest.json and the station files
     trim_from = ds.now - (STATION_DAYS + 1) * 1440
     tables, applied = correct.build_models(
-        ds.fc, ds.obs, keep_from, scorer.add, trim_from, region=ds.region
+        ds.fc, ds.obs, keep_from, on_table, trim_from, region=ds.region
     )
     # build_models consumed ds.fc: the raw history is freed
     t = lap("correct+scores", t)
+    # head-to-head comparisons; done now so the collected pairs are freed early
+    (out_dir / "compare.json").unlink(missing_ok=True)  # never leave a stale one
+    if comparer is not None:
+        res = _optional(optional_errors, "compare", comparer.result, list(tables))
+        comparer = None
+        if isinstance(res, dict):
+            _optional(optional_errors, "compare", _dump, res, out_dir / "compare.json")
+        del res
+    t = lap("compare", t)
     sc = scorer.result()
     latest = build_latest(ds, tables, sc.station)
     t = lap("latest", t)
@@ -448,8 +490,18 @@ def build(data_dir: Path, out_dir: Path, now: datetime | None = None) -> dict:
     }
     _dump(sc.scores, out_dir / "scores.json")
     _dump(latest, out_dir / "latest.json")
+    meta["optional_errors"] = optional_errors
     _dump(meta, out_dir / "meta.json")
     lap("total", t0)
+    build_info = {
+        "seconds": timings.get("total"),
+        "timings": timings,
+        "peak_rss_mb": max(peak_mb.values(), default=None),
+        "errors": optional_errors,
+    }
+    args = (data_dir, out_dir, now, meta, build_info)
+    if _optional(optional_errors, "health", health.build, *args) is _FAILED:
+        _dump(meta, out_dir / "meta.json")  # meta["optional_errors"] now names it
     summary = {
         "obs": int(len(ds.obs["sid"])),
         "fcst_rows": fcst_rows,
