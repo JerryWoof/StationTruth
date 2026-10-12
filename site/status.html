@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Status — StationTruth</title>
+<meta name="description" content="Is StationTruth's data pipeline healthy? Observation flow over the last 48 hours, stored model runs, TAFs, the analysis map and the last site build.">
+<meta name="theme-color" content="#f8fafc" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b1120" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
+<link rel="stylesheet" href="style.css?v=__BUILD__">
+<style>
+  /* page-specific: pipeline status */
+  .light { display: flex; align-items: flex-start; gap: 14px; }
+  .light .lamp { width: 22px; height: 22px; border-radius: 50%; flex: none; margin-top: 3px; background: var(--unk); box-shadow: 0 0 0 4px color-mix(in srgb, var(--unk) 22%, transparent); }
+  .light.ok .lamp { background: #22c55e; box-shadow: 0 0 0 4px rgba(34, 197, 94, .2); }
+  .light.degraded .lamp { background: #f59e0b; box-shadow: 0 0 0 4px rgba(245, 158, 11, .22); }
+  .light.down .lamp { background: #ef4444; box-shadow: 0 0 0 4px rgba(239, 68, 68, .22); }
+  .light h2 { margin: 0; font-size: 20px; }
+  .light p { margin: 2px 0 0; font-size: 14px; }
+  .reasons { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 6px; }
+  .reasons li { font-size: 13.5px; line-height: 1.45; padding: 6px 10px; border-radius: 8px; background: var(--surface-2); color: var(--text-2); display: flex; gap: 8px; align-items: baseline; }
+  .reasons .lv { font-size: 10.5px; font-weight: 750; text-transform: uppercase; letter-spacing: .05em; padding: 1px 6px; border-radius: 999px; flex: none; }
+  .lv.down { color: #fff; background: #dc2626; }
+  .lv.degraded { color: var(--warn-ink); background: var(--warn-bg); box-shadow: inset 0 0 0 1px currentColor; }
+  .lv.info { color: var(--muted); background: var(--surface-3); }
+  .page .reasons li { font-size: 13.5px; }
+  .obs-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .obs-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -2px; margin-right: 4px; }
+  .runs td.c { text-align: center; padding-left: 2px; padding-right: 2px; min-width: 26px; font-weight: 700; }
+  .runs th.c { text-align: center; padding-left: 2px; padding-right: 2px; font-size: 10px; letter-spacing: 0; text-transform: none; line-height: 1.2; }
+  .runs td.ok { color: var(--good); }
+  .runs td.missing { color: var(--warm); }
+  .runs td.pending, .runs td.before { color: var(--muted); font-weight: 500; }
+  .runs td.lt { font-size: 12px; color: var(--muted); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+  .cards .panel h3 { margin: 0 0 8px; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: var(--unk); }
+  .dot.ok { background: #22c55e; } .dot.degraded { background: #f59e0b; } .dot.down { background: #ef4444; }
+  dl.facts { font-size: 13.5px; }
+</style>
+</head>
+<body class="doc">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="brand" href="./" aria-label="StationTruth home">
+    <img class="brand-mark" src="favicon.svg" alt="" width="34" height="34">
+    <div class="brand-text">
+      <p class="h1">StationTruth</p>
+      <p class="status" id="status"><span class="live-dot" aria-hidden="true"></span><span id="updated">Loading…</span><span class="sep" aria-hidden="true">·</span><span id="count"></span></p>
+    </div>
+  </a>
+  <nav class="nav" aria-label="Pages">
+    <a href="./">Map</a>
+    <a href="forecast.html">Forecast</a>
+    <a href="analysis.html">Analysis</a>
+    <a href="scores.html">Scores</a>
+    <a href="tafs.html">TAFs</a>
+    <a href="about.html">About</a>
+  </nav>
+  <div class="top-actions">
+    <a class="btn icon-only" href="https://github.com/JerryWoof/StationTruth" title="StationTruth on GitHub" aria-label="StationTruth on GitHub" rel="noopener">
+      <svg viewBox="0 0 16 16" aria-hidden="true" class="fill"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    </a>
+  </div>
+</header>
+
+<main class="page" id="main">
+  <h1>Pipeline status</h1>
+  <p class="lede">Is data still flowing? Observations are collected every hour, model runs every three hours, and the site is rebuilt hourly. This page shows what arrived and what is late or missing.</p>
+
+  <section class="panel" aria-live="polite">
+    <div class="light" id="light"><span class="lamp" aria-hidden="true"></span><div><h2 id="light-title">Loading…</h2><p class="muted" id="light-sub"></p></div></div>
+    <ul class="reasons" id="reasons"></ul>
+  </section>
+
+  <div class="kpis" id="kpis" style="margin-top:16px"></div>
+
+  <h2>Observations, last 48 hours</h2>
+  <section class="panel" aria-labelledby="h-obs">
+    <h3 id="h-obs" style="margin:0 0 2px;font-size:14px">METAR/SPECI reports per hour</h3>
+    <p class="note" style="margin:0 0 10px" id="obs-sub">By observation time (UTC).</p>
+    <div class="chart" id="obs-chart" style="min-height:220px"></div>
+    <div class="obs-legend"><span><i style="background:var(--accent)"></i>normal</span><span><i style="background:var(--warm)"></i>gap or unusually few reports</span><span><i style="background:var(--surface-3)"></i>hour still filling (reports arrive with a delay)</span></div>
+  </section>
+
+  <h2>Model runs, last 7 days</h2>
+  <section class="panel">
+    <div class="tbl-wrap" id="runs"></div>
+    <p class="note" id="runs-note"></p>
+  </section>
+
+  <h2>Products</h2>
+  <div class="cards" id="cards"></div>
+
+  <footer class="foot">
+    <p>Generated from <code>data/health.json</code>, written at every site build by <code>stationtruth.health</code> (see <a href="https://github.com/JerryWoof/StationTruth/blob/main/docs/DATA.md#healthjson" rel="noopener">DATA.md</a>). Times are UTC.</p>
+    <p>Not for operational use. <a href="https://github.com/JerryWoof/StationTruth" rel="noopener">StationTruth on GitHub</a>.</p>
+  </footer>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.iife.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script type="module" src="status.js?v=__BUILD__"></script>
+</body>
+</html>
