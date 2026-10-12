@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>StationTruth — how good are weather models, really?</title>
+<meta name="description" content="ECMWF and GFS forecasts verified against ~5,000 airport observations worldwide, every hour — plus bias-corrected forecasts learned from that history. Open source.">
+<meta name="theme-color" content="#f8fafc" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b1120" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
+<meta property="og:type" content="website">
+<meta property="og:title" content="StationTruth — how good are weather models, really?">
+<meta property="og:description" content="ECMWF and GFS forecasts checked against ~5,000 airports, hourly. See where each model runs too warm, too cold or too windy — and whether bias correction fixes it.">
+<meta property="og:url" content="https://jerrywoof.github.io/StationTruth/">
+<meta property="og:site_name" content="StationTruth">
+<meta name="twitter:card" content="summary">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#search-input">Skip to search</a>
+
+<header class="topbar">
+  <a class="brand" href="./" aria-label="StationTruth home">
+    <img class="brand-mark" src="favicon.svg" alt="" width="34" height="34">
+    <div class="brand-text">
+      <h1>StationTruth</h1>
+      <p class="status" id="status"><span class="live-dot" aria-hidden="true"></span><span id="updated">Loading…</span><span class="sep" aria-hidden="true">·</span><span id="count"></span></p>
+    </div>
+  </a>
+
+  <nav class="nav" aria-label="Pages">
+    <a href="./" aria-current="page">Map</a>
+    <a href="scores.html">Scores</a>
+    <a href="about.html">About</a>
+  </nav>
+
+  <div class="search" role="search">
+    <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+    <input id="search-input" type="search" autocomplete="off" spellcheck="false"
+      placeholder="Search ICAO or airport name" aria-label="Search airports"
+      role="combobox" aria-expanded="false" aria-controls="search-list" aria-autocomplete="list">
+    <kbd class="search-kbd" aria-hidden="true">/</kbd>
+    <ul id="search-list" class="search-list" role="listbox" aria-label="Matching airports" hidden></ul>
+  </div>
+
+  <div class="top-actions">
+    <a class="btn mp-link" href="https://jerrywoof.github.io/MetarParse/" title="Live airport weather, decoded — the sister project" rel="noopener">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/><path d="M12 12 12 3"/></svg>
+      <span class="btn-label">MetarParse Live</span>
+    </a>
+    <a class="btn icon-only" href="https://github.com/JerryWoof/StationTruth" title="StationTruth on GitHub" aria-label="StationTruth on GitHub" rel="noopener">
+      <svg viewBox="0 0 16 16" aria-hidden="true" class="fill"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    </a>
+  </div>
+</header>
+
+<main class="stage">
+  <div id="map" aria-label="World map of airport stations coloured by forecast error"></div>
+
+  <section class="card info" id="info" aria-label="Headline">
+    <button class="info-toggle" id="info-toggle" type="button" aria-expanded="false" aria-controls="info-body">
+      <span class="ht" id="headline-short">Loading…</span>
+      <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+    </button>
+    <div class="info-body" id="info-body">
+      <p class="headline" id="headline" aria-live="polite">Loading the latest verification…</p>
+      <p class="headline-sub" id="headline-sub"></p>
+      <div id="collecting"></div>
+    </div>
+  </section>
+
+  <div class="card controls" id="controls">
+    <div class="seg full" id="mode-seg" role="group" aria-label="Map mode">
+      <button type="button" data-v="error">Error now</button>
+      <button type="button" data-v="bias">7-day bias</button>
+      <button type="button" data-v="best">Best model here</button>
+    </div>
+    <div class="ctl-row">
+      <label class="field"><span>Model</span>
+        <select class="select" id="model-sel"></select>
+      </label>
+      <label class="field"><span>Variable</span>
+        <select class="select" id="var-sel">
+          <option value="t">Temperature</option>
+          <option value="td">Dew point</option>
+          <option value="wspd">Wind speed</option>
+          <option value="mslp">Pressure</option>
+        </select>
+      </label>
+    </div>
+    <div class="legend" id="legend" aria-live="polite"></div>
+  </div>
+
+  <aside class="station" id="station" aria-label="Station details" hidden>
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <div id="station-body"></div>
+  </aside>
+
+  <div class="loading" id="loading" role="status"><div class="spinner" aria-hidden="true"></div><span>Loading stations…</span></div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+</main>
+
+<noscript><p class="noscript">StationTruth needs JavaScript to draw the map. The <a href="scores.html">scores</a> and <a href="about.html">methodology</a> pages explain the project.</p></noscript>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.iife.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>

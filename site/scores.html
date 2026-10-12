@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Scoreboard — StationTruth</title>
+<meta name="description" content="Which weather model is most accurate? RMSE and bias of ECMWF, GFS and bias-corrected forecasts against airport observations, by lead time, region and variable.">
+<meta name="theme-color" content="#f8fafc" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b1120" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
+<meta property="og:type" content="website">
+<meta property="og:title" content="StationTruth scoreboard — ECMWF vs GFS vs bias correction">
+<meta property="og:description" content="Forecast error by lead time, region and variable, verified against ~5,000 airports and updated every hour.">
+<meta property="og:url" content="https://jerrywoof.github.io/StationTruth/scores.html">
+<meta property="og:site_name" content="StationTruth">
+<meta name="twitter:card" content="summary">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="doc">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="brand" href="./" aria-label="StationTruth home">
+    <img class="brand-mark" src="favicon.svg" alt="" width="34" height="34">
+    <div class="brand-text">
+      <p class="h1">StationTruth</p>
+      <p class="status" id="status"><span class="live-dot" aria-hidden="true"></span><span id="updated">Loading…</span><span class="sep" aria-hidden="true">·</span><span id="count"></span></p>
+    </div>
+  </a>
+  <nav class="nav" aria-label="Pages">
+    <a href="./">Map</a>
+    <a href="scores.html" aria-current="page">Scores</a>
+    <a href="about.html">About</a>
+  </nav>
+  <div class="top-actions">
+    <a class="btn mp-link" href="https://jerrywoof.github.io/MetarParse/" title="Live airport weather, decoded — the sister project" rel="noopener">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/><path d="M12 12 12 3"/></svg>
+      <span class="btn-label">MetarParse Live</span>
+    </a>
+    <a class="btn icon-only" href="https://github.com/JerryWoof/StationTruth" title="StationTruth on GitHub" aria-label="StationTruth on GitHub" rel="noopener">
+      <svg viewBox="0 0 16 16" aria-hidden="true" class="fill"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    </a>
+  </div>
+</header>
+
+<main class="page" id="main">
+  <h1>Scoreboard</h1>
+  <p class="lede">How far off is each model, on average, as the forecast reaches further ahead? Every forecast is compared with what the airport actually reported. Lower is better; a bias near zero means no systematic lean.</p>
+  <div id="collecting"></div>
+
+  <div class="toolbar" role="group" aria-label="Score filters">
+    <div class="field"><span id="lbl-win">Window</span>
+      <div class="seg" id="win-seg" role="group" aria-labelledby="lbl-win">
+        <button type="button" data-v="7d">Last 7 days</button><button type="button" data-v="30d">Last 30 days</button>
+      </div>
+    </div>
+    <label class="field"><span>Region</span><select class="select" id="region-sel"></select></label>
+    <div class="field"><span id="lbl-var">Variable</span>
+      <div class="seg" id="var-seg" role="group" aria-labelledby="lbl-var" style="flex-wrap:wrap">
+        <button type="button" data-v="t">Temp</button><button type="button" data-v="td">Dew pt</button><button type="button" data-v="wspd">Wind</button><button type="button" data-v="gust">Gust</button><button type="button" data-v="mslp">Pressure</button><button type="button" data-v="wdir">Wind dir</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="model-key" id="model-key" role="group" aria-label="Show or hide models"></div>
+  <div class="charts">
+    <section class="panel" aria-labelledby="h-rmse">
+      <h3 id="h-rmse">Typical error (RMSE) by lead time</h3>
+      <p class="sub" id="sub-rmse">Root-mean-square error. Grows as the forecast reaches further ahead.</p>
+      <div class="chart" id="chart-rmse"></div>
+    </section>
+    <section class="panel" aria-labelledby="h-bias">
+      <h3 id="h-bias">Bias by lead time</h3>
+      <p class="sub" id="sub-bias">Mean of forecast − observed. Above zero: too high / warm; below: too low / cold.</p>
+      <div class="chart" id="chart-bias"></div>
+    </section>
+  </div>
+  <p class="note" id="lead-note"></p>
+
+  <h2>Summary</h2>
+  <div class="panel">
+    <div class="tbl-wrap" id="summary"></div>
+  </div>
+  <div class="callout" id="sample-note">
+    <b>About sample sizes.</b> <i>n</i> is the number of forecast–observation pairs behind each number. Thousands of pairs give stable scores; a few hundred
+    can swing from day to day, and differences of a few hundredths between models are within the noise. Lead times with fewer than 30 pairs are left out of the charts,
+    and rows with fewer than 100 pairs are greyed out. Small regions (Polar, Oceania) and rarely reported variables (gusts, sea-level pressure) have far fewer pairs than global temperature.
+  </div>
+
+  <h2 id="what">What do these numbers mean?</h2>
+  <div class="explain-grid">
+    <div class="panel"><h3>Bias</h3><p>The average of <i>forecast − observed</i>. It tells you whether a model <b>leans</b> one way: +0.8 °C means it is, on average, 0.8 °C too warm. Errors in both directions cancel, so a model can have zero bias and still be poor.</p></div>
+    <div class="panel"><h3>MAE</h3><p>Mean absolute error: the average size of the miss, ignoring direction. “On a typical hour this forecast is 1.4 °C off.” It is the easiest score to read.</p></div>
+    <div class="panel"><h3>RMSE</h3><p>Root-mean-square error. Like MAE, but squaring the errors first makes <b>big misses count more</b>. Always ≥ MAE; a large gap between the two means occasional big busts.</p></div>
+  </div>
+  <p class="note" style="margin-top:12px">Wind direction scores are circular (the error between 350° and 10° is 20°) and only use hours with at least 5 kt observed. See <a href="about.html">methodology</a> for the matching rules.</p>
+
+  <footer class="foot">
+    <p>Observations: <a href="https://aviationweather.gov" rel="noopener">aviationweather.gov</a> (NOAA), decoded with <a href="https://github.com/JerryWoof/MetarParse" rel="noopener">MetarParse</a>.
+      Forecasts: Source <a href="https://www.ecmwf.int" rel="noopener">ECMWF</a>, <a href="https://creativecommons.org/licenses/by/4.0/" rel="noopener">CC BY 4.0</a> (interpolated and bias-corrected by StationTruth); NOAA GFS (public domain).</p>
+    <p>Not for operational use. <a href="https://github.com/JerryWoof/StationTruth" rel="noopener">StationTruth on GitHub</a> · sister project <a href="https://jerrywoof.github.io/MetarParse/" rel="noopener">MetarParse Live</a>.</p>
+  </footer>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.iife.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script type="module" src="scores.js"></script>
+</body>
+</html>

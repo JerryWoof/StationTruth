@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>About &amp; methodology — StationTruth</title>
+<meta name="description" content="How StationTruth verifies ECMWF and GFS forecasts against airport METAR observations, how the bias correction works without look-ahead, and what the scores can and cannot tell you.">
+<meta name="theme-color" content="#f8fafc" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b1120" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
+<meta property="og:type" content="article">
+<meta property="og:title" content="How StationTruth checks weather models">
+<meta property="og:description" content="Sources, matching rules, bias correction without look-ahead, and the limitations of verifying gridded forecasts at airports.">
+<meta property="og:url" content="https://jerrywoof.github.io/StationTruth/about.html">
+<meta property="og:site_name" content="StationTruth">
+<meta name="twitter:card" content="summary">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="doc">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <a class="brand" href="./" aria-label="StationTruth home">
+    <img class="brand-mark" src="favicon.svg" alt="" width="34" height="34">
+    <div class="brand-text">
+      <p class="h1">StationTruth</p>
+      <p class="status" id="status"><span class="live-dot" aria-hidden="true"></span><span id="updated">Loading…</span><span class="sep" aria-hidden="true">·</span><span id="count"></span></p>
+    </div>
+  </a>
+  <nav class="nav" aria-label="Pages">
+    <a href="./">Map</a>
+    <a href="scores.html">Scores</a>
+    <a href="about.html" aria-current="page">About</a>
+  </nav>
+  <div class="top-actions">
+    <a class="btn mp-link" href="https://jerrywoof.github.io/MetarParse/" title="Live airport weather, decoded — the sister project" rel="noopener">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/><path d="M12 12 12 3"/></svg>
+      <span class="btn-label">MetarParse Live</span>
+    </a>
+    <a class="btn icon-only" href="https://github.com/JerryWoof/StationTruth" title="StationTruth on GitHub" aria-label="StationTruth on GitHub" rel="noopener">
+      <svg viewBox="0 0 16 16" aria-hidden="true" class="fill"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    </a>
+  </div>
+</header>
+
+<main class="page narrow" id="main">
+  <h1>How StationTruth works</h1>
+  <p class="lede">Weather apps rarely tell you how often they are wrong. StationTruth checks two of the world's main global forecast models — <b>ECMWF</b> and <b>GFS</b> — against what thousands of airports actually measure, every hour, and publishes the results. It then uses that track record to correct each model's habitual errors, and checks whether the correction really helps.</p>
+
+  <ul class="toc" aria-label="On this page">
+    <li><a href="#short">In short</a></li>
+    <li><a href="#sources">Sources</a></li>
+    <li><a href="#matching">Matching</a></li>
+    <li><a href="#scores">Scores</a></li>
+    <li><a href="#correction">Bias correction</a></li>
+    <li><a href="#limits">Limitations</a></li>
+    <li><a href="#licence">Licences &amp; credits</a></li>
+  </ul>
+
+  <div id="collecting"></div>
+
+  <h2 id="short">In short</h2>
+  <ol>
+    <li>Every hour we collect the latest weather reports (METARs) from about 5,000 airports.</li>
+    <li>Twice a day (00 and 12 UTC runs) we fetch the ECMWF and GFS forecasts for the next 72 hours and read off the value at each airport.</li>
+    <li>When the forecast hour arrives, we compare: <i>forecast − observed</i>. That difference is the error.</li>
+    <li>Averaging those errors over 7 and 30 days tells us which model is better, where, and for which weather variable.</li>
+    <li>The average error of the last two weeks is subtracted from new forecasts. Those <b>corrected</b> forecasts (and a blend of both) are scored exactly like the raw ones.</li>
+  </ol>
+  <div class="panel" style="margin-top:14px">
+    <dl class="facts" id="facts">
+      <dt>Collecting since</dt><dd id="f-first">–</dd>
+      <dt>Observations</dt><dd id="f-obs">–</dd>
+      <dt>Stations</dt><dd id="f-st">–</dd>
+      <dt>Verified pairs</dt><dd id="f-pairs">–</dd>
+      <dt>Latest runs</dt><dd id="f-runs">–</dd>
+      <dt>Page generated</dt><dd id="f-gen">–</dd>
+    </dl>
+  </div>
+
+  <h2 id="sources">Sources</h2>
+  <h3>Observations — METAR</h3>
+  <p>Routine (METAR) and special (SPECI) airport reports from the <a href="https://aviationweather.gov/data/api/" rel="noopener">aviationweather.gov</a> data cache run by NOAA's Aviation Weather Center, collected hourly. Each raw report is decoded with <a href="https://github.com/JerryWoof/MetarParse" rel="noopener">MetarParse</a>, our open-source METAR parser (the same library behind <a href="https://jerrywoof.github.io/MetarParse/" rel="noopener">MetarParse Live</a>). Where a US report carries the <code>T</code> remark group, temperature and dew point are taken to 0.1 °C instead of whole degrees; sea-level pressure comes from the <code>SLPppp</code> remark.</p>
+  <h3>Forecasts — ECMWF IFS and NOAA GFS</h3>
+  <p><b>ECMWF</b>: the Integrated Forecasting System high-resolution forecast from ECMWF's <a href="https://www.ecmwf.int/en/forecasts/datasets/open-data" rel="noopener">open data</a> service, 0.25° grid. <b>GFS</b>: NOAA's Global Forecast System at 0.25°, from the <a href="https://registry.opendata.aws/noaa-gfs-bdp-pds/" rel="noopener">NOAA Open Data Dissemination</a> bucket on AWS. For both, the 00 and 12 UTC runs are used, steps 0–72 h every 3 h.</p>
+  <p>Fields: 2 m temperature and dew point, 10 m wind (speed and direction from the u/v components), gusts (ECMWF <code>10fg</code>, GFS surface gust), mean-sea-level pressure (ECMWF <code>msl</code>, GFS <code>PRMSL</code>), cloud cover. Values are <b>bilinearly interpolated</b> from the four surrounding grid points to each station.</p>
+
+  <h2 id="matching">Matching forecasts to observations</h2>
+  <ul>
+    <li>A forecast valid at time <i>T</i> is paired with the observation at the same station closest to <i>T</i>, within <b>±30 minutes</b>. If a routine METAR and a SPECI are equally close, the METAR wins.</li>
+    <li>Variables verified: temperature, dew point, wind speed; <b>gusts</b> only when both the forecast and the observation report one; <b>pressure</b> only where the station reports sea-level pressure (the forecast MSLP is compared with the observed SLP, not with QNH); <b>wind direction</b> only when the observed wind is at least 5 kt, using the circular difference (350° vs 10° is a 20° error).</li>
+    <li>Error = forecast − observed. Positive means the model was too warm / too windy / too high.</li>
+    <li>All times are UTC. Units: °C, knots, hPa, degrees.</li>
+  </ul>
+  <p>On the map, “Error now” compares the latest observation with the forecast for that hour from the most recent run that covers it, linearly interpolated in time between the 3-hourly steps.</p>
+
+  <h2 id="scores">Scores</h2>
+  <p>For every model, region, variable and lead time we report the number of pairs <i>n</i> and three numbers built from the errors <i>e</i> = forecast − observed:</p>
+  <ul>
+    <li><b>Bias</b> = mean(<i>e</i>) — does the model lean one way?</li>
+    <li><b>MAE</b> = mean(|<i>e</i>|) — how far off is it on a typical hour?</li>
+    <li><b>RMSE</b> = √mean(<i>e</i>²) — like MAE, but large misses weigh more. RMSE² = bias² + variance of the error, so removing bias can only lower RMSE if the bias is stable.</li>
+  </ul>
+  <p>Windows are the last 7 and 30 days of verified pairs. Regions: Europe, North America, Central America &amp; Caribbean, South America, Africa, Middle East, Asia, Oceania and Polar (|latitude| &gt; 66.5°). The “best model here” on the map is the model with the lowest 7-day temperature RMSE at that station among those with at least 8 pairs.</p>
+
+  <h2 id="correction">Bias correction (with no look-ahead)</h2>
+  <p>Many forecast errors are systematic: a model grid cell is on average higher than the airport, a coastal station is mixed with sea, a valley gets colder at night than the smooth model terrain allows. These repeat day after day and can be learned.</p>
+  <p>For each model, station, variable, <b>lead-time bucket</b> (0–24, 27–48, 51–72 h) and <b>time-of-day bucket</b> of the valid time (00–05, 06–11, 12–17, 18–23 UTC), the correction is the mean error over the <b>previous 14 days</b> of verified pairs <b>whose run started before the run being corrected</b>. Only information that was available when the forecast was issued is used — no look-ahead — so the corrected forecasts are scored fairly, as if they had been issued in real time.</p>
+  <ul>
+    <li>A correction is applied only when the bucket has at least <b>8 pairs</b>; otherwise the raw forecast is kept. In the first days, “corrected” therefore equals “raw” almost everywhere.</li>
+    <li><code>ecmwf_bc</code> and <code>gfs_bc</code> are the corrected models. <code>blend</code> is the average of the two corrected forecasts (or whichever one exists).</li>
+    <li>Corrected forecasts are verified exactly like the raw ones, so the <a href="scores.html">scoreboard</a> shows whether the correction actually helps — and where it doesn't.</li>
+  </ul>
+  <div class="callout">Example: over the last two weeks ECMWF's afternoon (12–17 UTC) temperature at an airport in a valley was on average +1.2 °C too warm at 0–24 h lead. Today's ECMWF forecast of 18.0 °C for 15 UTC becomes 16.8 °C in <code>ecmwf_bc</code>.</div>
+
+  <h2 id="limits">Limitations</h2>
+  <ul>
+    <li><b>Point vs grid.</b> A 0.25° model cell (about 25 km) represents an area average; an airport thermometer measures one spot. Some “error” is simply that difference, especially on coasts, in mountains and around cities. It is still the error a user of the raw model at that place would see.</li>
+    <li><b>No height correction.</b> Model terrain and station elevation can differ by hundreds of metres. We deliberately do not apply a lapse-rate adjustment: raw scores show the model as delivered, and the bias correction learns the height difference along with everything else.</li>
+    <li><b>Airports only.</b> Stations are airports, mostly in flat, open terrain, and they are densest in North America and Europe. Global averages are weighted by where airports are, not by area or population.</li>
+    <li><b>Observation quality.</b> Outside the US, METAR temperatures are rounded to whole degrees, and occasional bad reports slip through. Gust and sea-level pressure reporting differ by country, so those samples are smaller and regionally biased.</li>
+    <li><b>Simple correction.</b> A fixed 14-day mean cannot follow sudden regime changes (a cold outbreak, snow cover appearing) and does nothing about random errors. It is a baseline, not a state-of-the-art post-processing system.</li>
+    <li><b>Short history.</b> Scores over a few days, or for small regions, carry real sampling noise — check <i>n</i> before reading much into small differences.</li>
+    <li><b>Not for operational use.</b> StationTruth is an independent, experimental project. Do not use it for aviation, navigation or safety decisions; use official forecasts and briefings.</li>
+  </ul>
+
+  <h2 id="licence">Licences, attribution &amp; credits</h2>
+  <h3>ECMWF open data</h3>
+  <p>Copyright © 2026 European Centre for Medium-Range Weather Forecasts (ECMWF). Source: <a href="https://www.ecmwf.int" rel="noopener">www.ecmwf.int</a>. This data is published under a Creative Commons Attribution 4.0 International licence (<a href="https://creativecommons.org/licenses/by/4.0/" rel="noopener">CC BY 4.0</a>). <b>StationTruth has modified the data</b>: it is interpolated to station locations and, for <code>ecmwf_bc</code> and <code>blend</code>, bias-corrected. ECMWF does not accept any liability whatsoever for any error or omission in the data, their availability, or for any loss or damage arising from their use.</p>
+  <h3>NOAA GFS and aviationweather.gov</h3>
+  <p>GFS forecasts and METAR observations are produced by the US National Oceanic and Atmospheric Administration (NOAA) and are in the public domain. NOAA does not endorse this project.</p>
+  <h3>Software</h3>
+  <p>StationTruth is open source under the MIT licence: <a href="https://github.com/JerryWoof/StationTruth" rel="noopener">github.com/JerryWoof/StationTruth</a>. Observations are decoded with <a href="https://github.com/JerryWoof/MetarParse" rel="noopener">MetarParse</a> (<a href="https://jerrywoof.github.io/MetarParse/" rel="noopener">MetarParse Live</a> shows every airport's current weather). Data collection, verification and this site run on GitHub Actions and GitHub Pages and are regenerated every hour. Map: <a href="https://leafletjs.com" rel="noopener">Leaflet</a> with Esri Canvas tiles (© Esri, HERE, Garmin, © OpenStreetMap contributors); charts: <a href="https://github.com/leeoniya/uPlot" rel="noopener">uPlot</a>. No trackers, no cookies.</p>
+
+  <footer class="foot">
+    <p>Questions, ideas or a station that looks wrong? <a href="https://github.com/JerryWoof/StationTruth/issues" rel="noopener">Open an issue on GitHub</a>.</p>
+  </footer>
+</main>
+
+<script type="module">
+  import { loadMeta, setStatus, collectingHTML, fmtInt, dateLabel, ago, runLabel, utcLabel } from './common.js';
+  const $ = (id) => document.getElementById(id);
+  loadMeta().then((meta) => {
+    setStatus(meta);
+    $('collecting').innerHTML = collectingHTML(meta);
+    if (!meta) return;
+    $('f-first').textContent = dateLabel(meta.first_obs);
+    $('f-obs').textContent = fmtInt(meta.obs_count);
+    $('f-st').textContent = fmtInt(meta.station_count);
+    $('f-pairs').textContent = fmtInt(meta.pairs);
+    const lr = meta.latest_run || {};
+    $('f-runs').textContent = [lr.ecmwf && `ECMWF ${runLabel(lr.ecmwf)}`, lr.gfs && `GFS ${runLabel(lr.gfs)}`].filter(Boolean).join(' · ') || '–';
+    $('f-gen').textContent = `${dateLabel(meta.generated)} ${utcLabel(meta.generated)} (${ago(meta.generated)})`;
+  }).catch((e) => console.error(e));
+</script>
+</body>
+</html>
