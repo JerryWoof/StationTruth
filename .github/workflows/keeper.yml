@@ -1,0 +1,44 @@
+name: Keeper
+
+# Fallback timer: GitHub's cron scheduler can be delayed for hours (it never
+# fired for this repo's first day). This job stays alive for ~5.5 h, dispatches
+# the collectors on time, then re-dispatches itself. The collectors keep their
+# own schedules too; duplicate runs are harmless (data is deduplicated).
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 */6 * * *"
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: keeper
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Dispatch collectors on the hour
+        run: |
+          end=$(( $(date +%s) + 330*60 ))
+          last_obs="" ; last_fcst=""
+          while [ "$(date +%s)" -lt "$end" ]; do
+            hour=$(date -u +%Y%m%d%H); h=$((10#$(date -u +%H))); m=$((10#$(date -u +%M)))
+            if [ "$m" -ge 7 ] && [ "$last_obs" != "$hour" ]; then
+              gh workflow run collect-obs.yml --repo "$REPO" && last_obs=$hour
+            fi
+            if [ $((h % 3)) -eq 0 ] && [ "$m" -ge 20 ] && [ "$last_fcst" != "$hour" ]; then
+              gh workflow run collect-fcst.yml --repo "$REPO" && last_fcst=$hour
+            fi
+            sleep 60
+          done
+      - name: Hand over to the next keeper
+        if: always()
+        run: gh workflow run keeper.yml --repo "$REPO"
