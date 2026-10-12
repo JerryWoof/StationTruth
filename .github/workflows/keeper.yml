@@ -39,6 +39,16 @@ jobs:
             fi
             sleep 60
           done
-      - name: Hand over to the next keeper
+      # Retire once GitHub's own cron works: if collect-obs.yml had a scheduled run in
+      # the last 3 hours, don't start another keeper.
+      - name: Hand over to the next keeper (unless cron works)
         if: always()
-        run: gh workflow run keeper.yml --repo "$REPO"
+        run: |
+          since=$(date -u -d '3 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+          n=$(gh run list --repo "$REPO" --workflow collect-obs.yml --event schedule --limit 20 \
+                --json createdAt --jq "[.[] | select(.createdAt > \"$since\")] | length")
+          if [ "${n:-0}" -gt 0 ]; then
+            echo "GitHub cron is running ($n scheduled runs in 3 h); keeper retires."
+          else
+            gh workflow run keeper.yml --repo "$REPO"
+          fi
