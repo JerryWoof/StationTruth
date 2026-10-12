@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Airport forecast — StationTruth</title>
+<meta name="description" content="The best forecast for your airport: a blend of all bias-corrected models (ECMWF, GFS, AI models), with an uncertainty band from the airport's own track record. Hourly for the next three days, free JSON API.">
+<meta name="theme-color" content="#f8fafc" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b1120" media="(prefers-color-scheme: dark)">
+<meta name="color-scheme" content="light dark">
+<meta property="og:type" content="website">
+<meta property="og:title" content="StationTruth — the best forecast for your airport">
+<meta property="og:description" content="Bias-corrected model blend for ~5,000 airports, with an honest uncertainty band from each airport's own verification.">
+<meta property="og:url" content="https://jerrywoof.github.io/StationTruth/forecast.html">
+<meta property="og:site_name" content="StationTruth">
+<meta name="twitter:card" content="summary">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
+<link rel="stylesheet" href="style.css?v=__BUILD__">
+<style>
+  /* forecast page only (kept here so style.css stays shared) */
+  :root {
+    --fc-t: #c2410c; --fc-td: #0f8a6e; --fc-wind: #2563eb; --fc-p: #7c3aed; --fc-cloud: #64748b;
+    --fc-night: rgba(15, 23, 42, 0.055);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fc-t: #e0603c; --fc-td: #1aa67c; --fc-wind: #3f82e6; --fc-p: #8f6ce6; --fc-cloud: #7d8a9c;
+      --fc-night: rgba(0, 0, 0, 0.28);
+    }
+  }
+  .fc-find { display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: flex-end; margin: 4px 0 18px; }
+  .fc-find .search { flex: 1 1 320px; max-width: 520px; }
+  .fc-units { display: flex; flex-wrap: wrap; gap: 10px 12px; }
+  .fc-head { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px 16px; margin-bottom: 14px; }
+  .fc-title { flex: 1 1 320px; min-width: 0; }
+  .fc-title h2 { margin: 6px 0 2px; font-size: 24px; letter-spacing: -0.015em; overflow-wrap: anywhere; outline: none; }
+  .fc-title .sub { font-size: 13px; color: var(--muted); }
+  .fc-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  .fc-now { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 0 0 16px; }
+  .fc-now .kpi .v { font-size: 20px; }
+  .fc-now .kpi .s { font-size: 12px; }
+  .readout { min-height: 22px; font-size: 13px; color: var(--text-2); font-variant-numeric: tabular-nums; margin: 0 0 6px; display: flex; flex-wrap: wrap; gap: 2px 14px; }
+  .readout b { color: var(--text); }
+  .readout .rk { display: inline-flex; align-items: center; gap: 5px; }
+  .mg-row + .mg-row { margin-top: 6px; }
+  .mg-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 12px; font-weight: 650; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: 8px 0 0; }
+  .mg-label .lk { display: inline-flex; flex-wrap: wrap; gap: 4px 12px; text-transform: none; letter-spacing: 0; font-weight: 550; color: var(--text-2); }
+  .lk span { display: inline-flex; align-items: center; gap: 5px; }
+  .sw-band { display: inline-block; width: 16px; height: 9px; border-radius: 2px; background: var(--c); opacity: .25; }
+  .sw-l { display: inline-block; width: 16px; height: 0; border-top: 2px solid var(--c); }
+  .sw-l.dash { border-top-style: dashed; }
+  .sw-night { display: inline-block; width: 14px; height: 10px; border-radius: 2px; background: var(--fc-night); box-shadow: inset 0 0 0 1px var(--border); }
+  .mg { position: relative; width: 100%; }
+  .mg .u-legend { display: none; }
+  .cmp { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 0; align-items: center; }
+  .cmp .cap { font-size: 12px; color: var(--muted); margin-right: 4px; }
+  .fc-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
+  .fc-grid > * { min-width: 0; }
+  .trust h3 { margin: 0 0 6px; font-size: 15px; }
+  .trust p { font-size: 14px; margin: 6px 0; }
+  .trust .big { font-size: 15px; color: var(--text); line-height: 1.5; }
+  .trust .tbl { font-size: 12.5px; margin-top: 8px; }
+  .trust ul { margin: 6px 0 0; padding-left: 18px; }
+  .trust li { font-size: 13px; line-height: 1.5; }
+  .api { margin-top: 16px; }
+  .api code { display: block; overflow-x: auto; white-space: nowrap; padding: 8px 10px; font-size: 12.5px; margin: 6px 0 8px; }
+  table.fc-tbl th, table.fc-tbl td { padding: 6px 8px; }
+  table.fc-tbl th:first-child, table.fc-tbl td:first-child { position: sticky; left: 0; background: var(--surface-solid); z-index: 1; padding-left: 0; }
+  table.fc-tbl tr.day th { text-align: left; font-size: 12px; color: var(--text); background: var(--surface-2); padding: 6px 8px; letter-spacing: .02em; }
+  table.fc-tbl tr.day th:first-child { background: var(--surface-2); padding-left: 8px; }
+  table.fc-tbl .rng { display: block; font-size: 11px; color: var(--muted); font-weight: 500; }
+  .arrow { width: 14px; height: 14px; vertical-align: -2px; margin-right: 4px; fill: currentColor; }
+  .cloudbar { display: inline-block; width: 28px; height: 6px; border-radius: 3px; background: var(--surface-3); vertical-align: middle; margin-left: 6px; overflow: hidden; }
+  .cloudbar i { display: block; height: 100%; background: var(--fc-cloud); }
+  .welcome .quick { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .fc-toast { position: fixed; top: 74px; }
+  @media (max-width: 960px) { .fc-grid { grid-template-columns: 1fr; } }
+  @media (max-width: 720px) {
+    .fc-find .search { order: 0; flex: 1 0 100%; }
+    .fc-title h2 { font-size: 20px; }
+    .fc-units .seg button { padding: 5px 8px; }
+    table.fc-tbl th, table.fc-tbl td { padding: 6px 6px; }
+  }
+</style>
+</head>
+<body class="doc">
+<a class="skip" href="#fc-search">Skip to search</a>
+
+<header class="topbar">
+  <a class="brand" href="./" aria-label="StationTruth home">
+    <img class="brand-mark" src="favicon.svg" alt="" width="34" height="34">
+    <div class="brand-text">
+      <p class="h1">StationTruth</p>
+      <p class="status" id="status"><span class="live-dot" aria-hidden="true"></span><span id="updated">Loading…</span><span class="sep" aria-hidden="true">·</span><span id="count"></span></p>
+    </div>
+  </a>
+  <nav class="nav" aria-label="Pages">
+    <a href="./">Map</a>
+    <a href="forecast.html" aria-current="page">Forecast</a>
+    <a href="analysis.html">Analysis</a>
+    <a href="scores.html">Scores</a>
+    <a href="tafs.html">TAFs</a>
+    <a href="about.html">About</a>
+  </nav>
+  <div class="top-actions">
+    <a class="btn mp-link" href="https://jerrywoof.github.io/MetarParse/" title="Live airport weather, decoded — the sister project" rel="noopener">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/><path d="M12 12 12 3"/></svg>
+      <span class="btn-label">MetarParse Live</span>
+    </a>
+    <a class="btn icon-only" href="https://github.com/JerryWoof/StationTruth" title="StationTruth on GitHub" aria-label="StationTruth on GitHub" rel="noopener">
+      <svg viewBox="0 0 16 16" aria-hidden="true" class="fill"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    </a>
+  </div>
+</header>
+
+<main class="page" id="main">
+  <h1>Forecast</h1>
+  <p class="lede">The best forecast for your airport: a blend of all the bias-corrected weather models we verify (ECMWF, GFS and AI models), checked every hour against what the airport actually reports. The shaded band shows how far off it has been here lately.</p>
+
+  <div class="fc-find">
+    <div class="search" role="search">
+      <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="fc-search" type="search" autocomplete="off" spellcheck="false"
+        placeholder="Airport: ICAO, IATA or name (e.g. LKPR, JFK, Heathrow)" aria-label="Find an airport by ICAO, IATA code or name"
+        role="combobox" aria-expanded="false" aria-controls="fc-list" aria-autocomplete="list">
+      <kbd class="search-kbd" aria-hidden="true">/</kbd>
+      <ul id="fc-list" class="search-list" role="listbox" aria-label="Matching airports" hidden></ul>
+    </div>
+    <button class="btn" type="button" id="near-btn" title="Find the nearest airport with a forecast (uses your location once, in your browser only)">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="7"/></svg>
+      Near me
+    </button>
+    <div class="fc-units" role="group" aria-label="Units">
+      <div class="field"><span id="lbl-tu">Temp</span>
+        <div class="seg small" id="tu-seg" role="group" aria-labelledby="lbl-tu"><button type="button" data-v="c">°C</button><button type="button" data-v="f">°F</button></div>
+      </div>
+      <div class="field"><span id="lbl-wu">Wind</span>
+        <div class="seg small" id="wu-seg" role="group" aria-labelledby="lbl-wu"><button type="button" data-v="kt">kt</button><button type="button" data-v="kmh">km/h</button><button type="button" data-v="ms">m/s</button></div>
+      </div>
+      <div class="field"><span id="lbl-tz">Time</span>
+        <div class="seg small" id="tz-seg" role="group" aria-labelledby="lbl-tz"><button type="button" data-v="utc">UTC</button><button type="button" data-v="local">Your time</button></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="fc-body" aria-live="polite">
+    <div class="panel welcome" id="welcome">
+      <p style="margin:0">Search for an airport above, or use <b>Near me</b>. Every airport with a recent METAR has a forecast — about 5,000 worldwide.</p>
+      <div class="quick" id="quick"></div>
+    </div>
+  </div>
+
+  <footer class="foot">
+    <p>Observations: <a href="https://aviationweather.gov" rel="noopener">aviationweather.gov</a> (NOAA), decoded with <a href="https://github.com/JerryWoof/MetarParse" rel="noopener">MetarParse</a>.
+      Forecasts: Source <a href="https://www.ecmwf.int" rel="noopener">ECMWF</a>, <a href="https://creativecommons.org/licenses/by/4.0/" rel="noopener">CC BY 4.0</a> (interpolated, bias-corrected and blended by StationTruth); NOAA GFS (public domain).</p>
+    <p>Not for operational use — for flight planning use official sources (TAF, your national met service). <a href="https://github.com/JerryWoof/StationTruth/blob/main/docs/FORECAST_API.md" rel="noopener">Free JSON API</a> · <a href="https://github.com/JerryWoof/StationTruth" rel="noopener">StationTruth on GitHub</a>.</p>
+  </footer>
+</main>
+<div class="toast fc-toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.iife.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script type="module" src="forecast.js?v=__BUILD__"></script>
+</body>
+</html>
