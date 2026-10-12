@@ -13,7 +13,9 @@ valley"*) and uses them to make bias-corrected forecasts, then scores those too,
 so you can see whether the correction actually helps.
 
 **[🌍 Live map](https://jerrywoof.github.io/StationTruth/)** ·
+**[🗺️ Analysis](https://jerrywoof.github.io/StationTruth/analysis.html)** ·
 **[📊 Scoreboard](https://jerrywoof.github.io/StationTruth/scores.html)** ·
+**[✈️ TAFs vs reality](https://jerrywoof.github.io/StationTruth/tafs.html)** ·
 **[📖 Methodology](https://jerrywoof.github.io/StationTruth/about.html)**
 
 ## What you can see
@@ -24,6 +26,11 @@ so you can see whether the correction actually helps.
 - **Station charts**: observed weather vs. 24 h forecasts for the last week, plus
   the next 72 h from every model, raw and corrected.
 - **Scoreboard**: bias, MAE and RMSE by lead time, model and region.
+- **Analysis**: an hourly temperature and wind map that starts from ECMWF and is
+  pulled toward what the airports measured (optimal interpolation). At stations
+  it never saw, it is about a third more accurate than the model alone.
+- **TAFs vs reality**: the official airport forecasts scored against what the
+  METARs then showed: hit rate, POD/FAR/CSI for IFR-or-worse, by lead time.
 
 ## How it works
 

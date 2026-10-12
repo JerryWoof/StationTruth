@@ -32,3 +32,5 @@ jobs:
       # from the Data API add half-hourly reports and SPECIs between runs.
       - name: Collect latest METARs
         run: stationtruth collect-obs --recent-hours 2
+      - name: Collect latest TAFs
+        run: python -m stationtruth.tafs collect

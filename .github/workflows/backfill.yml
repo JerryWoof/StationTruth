@@ -13,6 +13,10 @@ on:
         description: "backfill observations too"
         type: boolean
         default: true
+      tafs:
+        description: "backfill TAFs too (Data API keeps ~30 days; ~4 min per day)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -44,3 +48,6 @@ jobs:
           --days "${{ inputs.days }}"
           --models "${{ inputs.models }}"
           ${{ !inputs.obs && '--no-obs' || '' }}
+      - name: Backfill TAFs
+        if: ${{ inputs.tafs }}
+        run: python -m stationtruth.tafs backfill --days "${{ inputs.days }}"

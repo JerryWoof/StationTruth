@@ -4,6 +4,10 @@ on:
   schedule:
     - cron: "40 * * * *"
   workflow_dispatch:
+  # Also rebuild as soon as new observations or forecasts are stored.
+  workflow_run:
+    workflows: ["Collect observations", "Collect forecasts"]
+    types: [completed]
   push:
     branches: [main]
     paths:
@@ -53,6 +57,14 @@ jobs:
           key: data-${{ github.run_id }}
       - name: Build site data
         run: stationtruth build-site --data-dir data --out site/data
+      - name: Build TAF verification
+        run: python -m stationtruth.tafverify --data-dir data --out site/data
+      # Needs a reachable ECMWF run; the rest of the site still deploys without it.
+      - name: Build analysis
+        run: python -m stationtruth.analysis --data-dir data --out site/data/analysis
+        continue-on-error: true
+      - name: Stamp build id (cache busting)
+        run: sed -i "s/__BUILD__/${GITHUB_SHA::12}-${GITHUB_RUN_ID}/g" site/*.html site/*.js
       - uses: actions/upload-pages-artifact@v4
         with:
           path: site
