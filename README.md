@@ -42,9 +42,12 @@ NOAA GFS on AWS (0.25°)    ─►                          ┘              │
    with eccodes and bilinearly interpolated to each airport.
 3. **Verification**: each forecast is matched with the nearest observation within
    ±30 min. Scores: bias, MAE, RMSE (circular error for wind direction).
-4. **Bias correction**: per station, variable, lead-time and time-of-day bucket,
-   the mean error over the previous 14 days, **using only observations available
-   before the forecast was issued** (no look-ahead, enforced by tests).
+4. **Bias correction**: each model's typical error over the previous 14 days,
+   estimated in layers (region → station → station at that lead time and time of
+   day) with shrinkage, so it is robust from the first days of data. It uses
+   **only observations available before the forecast was issued** (no look-ahead,
+   enforced by tests). Chosen by out-of-sample comparison with alternatives
+   ([scripts/evaluate_correction.py](scripts/evaluate_correction.py)).
 5. **Blend**: the average of both corrected models, using each model's latest
    available run.
 

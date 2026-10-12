@@ -412,7 +412,9 @@ def build(data_dir: Path, out_dir: Path, now: datetime | None = None) -> dict:
     # scores are accumulated per model on complete tables; afterwards only the last
     # week (+ margin) is kept for latest.json and the station files
     trim_from = ds.now - (STATION_DAYS + 1) * 1440
-    tables, applied = correct.build_models(ds.fc, ds.obs, keep_from, scorer.add, trim_from)
+    tables, applied = correct.build_models(
+        ds.fc, ds.obs, keep_from, scorer.add, trim_from, region=ds.region
+    )
     # build_models consumed ds.fc: the raw history is freed
     t = lap("correct+scores", t)
     sc = scorer.result()

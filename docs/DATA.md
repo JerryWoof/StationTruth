@@ -97,13 +97,38 @@ station elevation is part of what the bias correction learns.
 
 ## Bias correction (`stationtruth.correct`)
 
-For each model, station, variable, lead-time bucket (0–24, 27–48, 51–72 h) and
-valid hour-of-day bucket (00–05, 06–11, 12–17, 18–23 UTC), the correction is
-the mean error over the **previous 14 days of verified pairs whose run time is
-earlier than the run being corrected** (no look-ahead). Applied only when at
-least 8 pairs exist; otherwise the raw forecast is kept. Corrected models are
-named `ecmwf_bc`, `gfs_bc`. Corrected forecasts are verified exactly like
-raw ones, so the scoreboard shows whether correction actually helps.
+The correction for run R of a raw model (`ecmwf`, `gfs`) uses only verified
+pairs that were available at R: valid time ≤ R, run time **strictly earlier
+than R**, valid time within the previous 14 days (no look-ahead). Errors are
+forecast − observed. It is a mean error estimated at three nested levels, each
+shrunk toward the next broader one with a fixed pseudo-count k
+("the level's own pairs plus k imaginary pairs at the broader mean"):
+
+| level | group | estimate |
+|---|---|---|
+| region prior | region × lead bucket × valid-hour bucket, all stations | `b_r = S_r / (n_r + 20)` |
+| station | station, all lead and hour buckets | `b_s = (S_s + 5·b_r) / (n_s + 5)` |
+| cell | station × lead bucket × valid-hour bucket | `b_c = (S_c + 10·b_s) / (n_c + 10)` |
+
+`S`, `n` are the sum of errors and the number of pairs of the group in the
+window, separately per model and variable (`t`, `td`, `wspd`, `gust`, `mslp`).
+Lead buckets: 0–24, 27–48, 51–72 h; valid-hour buckets: 00–05, 06–11, 12–17,
+18–23 UTC; regions as in `scores.json` (one global prior when no region map is
+passed to `stationtruth.correct.build_models`).
+The corrected forecast is `raw − b_c`; `wspd` and `gust` are clipped at 0 and
+the corrected `td` is capped at the corrected `t`. Only when no pair at all is
+available (empty station and empty region bucket) is the raw forecast kept.
+`wdir` is not corrected. Corrected models are named `ecmwf_bc`, `gfs_bc`;
+they are verified exactly like raw ones, so the scoreboard shows whether
+correction actually helps. `meta.json` `correction.min_pairs` is therefore 1.
+
+The scheme and its constants were chosen with `scripts/evaluate_correction.py`,
+an out-of-sample evaluation that learns every candidate exactly as above (only
+pairs available at each run) and scores the corrected runs. On 8 days of data
+(7 ECMWF and 14 GFS runs) it reduced RMSE versus raw for every model and
+variable, in every lead bucket and at every amount of history, and beat the
+previous rule (cell mean, applied only with ≥ 8 pairs), plain shrinkage toward
+zero, median-based (robust) estimates and a multiplicative wind correction.
 
 `blend` is built for every run time R of either model (the blend run is named
 by R). For each model, the component is that model's corrected forecast from
@@ -116,7 +141,9 @@ that component. No run later than R is ever used and each component's
 correction is itself look-ahead free, so the blend is too.
 
 Note that `gust` is verified only when the observation reports a gust, so its
-scores describe a conditional (gusty-conditions) sample, not all hours.
+scores describe a conditional (gusty-conditions) sample, not all hours. The
+gust correction is learned from that same sample, so it describes gusty hours
+and may overstate gusts in calm hours, which no score can reveal.
 
 ## Site data (`site/data/`, generated, not committed)
 
@@ -183,14 +210,36 @@ that covers it (interpolated linearly in time between 3-hourly steps).
 
 ### `stations/<ID>.json`
 
+One file per station with an observation in the last 7 days (~8 KB each,
+~45 MB for ~5,600 stations). Only the variables the station panel shows are
+included: `t`, `td`, `wspd`, `mslp` (obs `mslp` is the observed SLP).
+
 ```json
 {
-  "id": "LKPR", "name": "...", "country": "CZ", "lat": 50.1, "lon": 14.26, "elev_m": 364,
-  "obs": {"time": [...], "t": [...], "td": [...], "wspd": [...], "gust": [...], "wdir": [...], "mslp": [...]},  // last 7 days, hourly
-  "past": {"ecmwf": {"valid": [...], "t": [...], ...}, ...},   // 24 h lead forecasts verifying in the last 7 days
-  "future": {"ecmwf": {"run": "2026101212", "valid": [...], "t": [...], ...}, "gfs": {...}, "ecmwf_bc": {...}, "gfs_bc": {...}, "blend": {...}},  // latest run, next 72 h
-  "scores": {"7d": {"ecmwf": {"t": {"n": 160, "bias": 0.8, "mae": 1.2, "rmse": 1.6}, ...}, ...}, "30d": {...}}
+  "id": "LKPR", "name": "...", "country": "CZ", "lat": 50.101, "lon": 14.26, "elev_m": 364,
+  "scale": 10,
+  "obs": {"start": "2026-10-05T19:00:00Z", "step": 60, "t": [140, -20, null, 10, ...], "td": [...], "wspd": [...]},
+  "past": {"ecmwf": {"start": "2026-10-05T21:00:00Z", "step": 180, "t": [...], ...}, ...},
+  "future": {"ecmwf": {"run": "2026101212", "start": "2026-10-12T12:00:00Z", "step": 180, "t": [...], ...}, "gfs": {...}, "ecmwf_bc": {...}, "gfs_bc": {...}, "blend": {...}},
+  "scores": {"7d": {"ecmwf": {"t": [160, 0.8, 1.2, 1.6], "td": [...], "wspd": [...], "mslp": [...]}, ...}, "30d": {...}}
 }
 ```
 
-Floats rounded to 1 decimal, missing values `null`, compact JSON.
+* **Series blocks** (`obs`, `past.<model>`, `future.<model>`) are regular time
+  grids: value *i* is valid at `start + i × step` (`step` in minutes). Slots
+  without data are `null` — readers must not join lines across them.
+* **Values** are integers in units of `1 / scale` (tenths), **delta-coded**: the
+  first non-null number is the value itself, each later one the difference to
+  the previous non-null value. Decode with a running sum that skips nulls,
+  then divide by `scale`: `[140, -20, null, 10]` → `[14.0, 12.0, null, 13.0]`.
+* A variable with no value in a block is left out of that block (e.g. `mslp`
+  where the station reports no SLP); a block without any value is left out.
+* `obs`: hourly (`step` 60), the report nearest each full hour (±30 min, METAR
+  wins ties), last 7 days. Leading/trailing hours without data are trimmed.
+* `past.<model>`: the 24 h lead forecast (nearest lead in 21–27 h) verifying in
+  the last 7 days, normally 3-hourly.
+* `future.<model>`: the model's latest run (`run`), every step (0–72 h).
+* `scores.<window>.<model>.<var>`: `[n, bias, mae, rmse]` over all lead times,
+  1 decimal, `null` when `n` is 0.
+
+Compact JSON, no `NaN`.

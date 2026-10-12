@@ -1,24 +1,36 @@
 """Bias correction (docs/DATA.md, "Bias correction").
 
-For each raw model, station, variable, lead bucket (0-24, 27-48, 51-72 h) and
-valid-hour bucket (00-05, 06-11, 12-17, 18-23 UTC) the correction for run R is
-the mean error of verified pairs that were *available at R*:
+The correction for run R of a raw model is learned only from verified pairs
+that were *available at R*:
 
-* pair valid time ``<= R`` (the observation existed), and
+* pair valid time ``<= R`` (the observation existed),
 * pair run time ``< R`` (strictly earlier run; excludes R's own analysis step),
 * pair valid time ``> R - 14 days``.
 
-At least 8 such pairs are required, otherwise the raw forecast is kept.
-``corrected = raw - mean_error``; wspd/gust are clipped at 0. Wind direction
-is not corrected. ``blend`` is the mean of ``ecmwf_bc`` and ``gfs_bc`` for the
-same station/run/lead (circular mean for wdir), falling back to whichever
-exists.
+It is a three-level shrinkage ("pseudo-count") estimate of the mean error
+(forecast - observed). With ``S``, ``n`` the error sum and pair count of a group:
 
-Vectorised: per (model, variable) the pairs are sorted by
+* region prior  ``b_r = S_r / (n_r + K_REGION)``, group = region x lead bucket x
+  valid-hour bucket (all stations of the region; one global region if no
+  region map is given),
+* station       ``b_s = (S_s + K_STATION * b_r) / (n_s + K_STATION)``, group = the
+  station over all lead and hour buckets,
+* cell          ``b_c = (S_c + K_CELL * b_s) / (n_c + K_CELL)``, group = station x
+  lead bucket (0-24, 27-48, 51-72 h) x valid-hour bucket (00-05, ... UTC).
+
+Each level is the mean of its own pairs pulled toward the broader level as if
+K extra pairs with the broader mean had been seen, so a handful of pairs moves
+the correction only a little and a well-sampled cell gets its own mean.
+``corrected = raw - b_c``; wspd/gust are clipped at 0 and the corrected td is
+capped at the corrected t. Without any pair (all levels empty) the raw value is
+kept. Wind direction is not corrected. The constants were chosen by
+``scripts/evaluate_correction.py`` (out-of-sample RMSE on real data).
+
+Vectorised: per grouping level the matched pairs are sorted by
 ``group << 33 | (2 * valid + is_lead0)``; the extra half-step for lead-0 pairs
 (whose run equals their valid time) makes them usable only for later runs.
-Window sums are differences of a cumulative sum at two
-``searchsorted`` positions.
+Window sums are differences of a cumulative sum at two ``searchsorted``
+positions.
 """
 
 from __future__ import annotations
@@ -30,7 +42,13 @@ import numpy as np
 from .verify import CHUNK, FC_VARS, Table, errors_at
 
 WINDOW_DAYS = 14
-MIN_PAIRS = 8
+#: pseudo-counts: how many pairs of the broader level the narrower level's mean
+#: is blended with (see module docstring)
+K_CELL = 10
+K_STATION = 5
+K_REGION = 20
+#: a correction exists as soon as one pair is available at any level (meta.json)
+MIN_PAIRS = 1
 CORRECTED_VARS: tuple[str, ...] = ("t", "td", "wspd", "gust", "mslp")
 NONNEG: frozenset[str] = frozenset({"wspd", "gust"})
 N_HOUR_BUCKETS = 4
@@ -55,34 +73,42 @@ def bucket_group(T: Table) -> np.ndarray:
     )
 
 
+def region_group(T: Table, region: np.ndarray | None) -> np.ndarray:
+    """Dense group id: region (slot 0 = unknown/global) x lead bucket x valid-hour bucket."""
+    if region is None or len(region) == 0:
+        reg = np.zeros(len(T["sid"]), np.int64)
+    else:
+        sid = T["sid"].astype(np.int64)
+        reg = np.zeros(len(sid), np.int64)
+        known = sid < len(region)
+        reg[known] = region[sid[known]].astype(np.int64) + 1
+    return (
+        reg * (N_LEAD_BUCKETS * N_HOUR_BUCKETS)
+        + lead_bucket(T["lead"]) * N_HOUR_BUCKETS
+        + hour_bucket(T["valid"])
+    )
+
+
 #: errors are summed as integers of 1e-4 units, so window sums are exact and do not
 #: depend on unrelated (e.g. later) pairs that precede them in the cumulative sum
 ERR_SCALE = 10_000
 
 
-def corrections(
-    T: Table,
-    obs: Table,
-    variables: tuple[str, ...] = CORRECTED_VARS,
-    rows: np.ndarray | None = None,
-) -> dict[str, tuple[np.ndarray, np.ndarray]]:
-    """var -> (mean error to subtract, pair count) for ``rows`` of T (default: all).
+def _windows(
+    T: Table, group: np.ndarray, matched: np.ndarray, rows: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(order of ``matched`` by group/availability, hi, lo) for the query ``rows``.
 
-    The mean is NaN where fewer than MIN_PAIRS pairs are available.
+    For query row r the pairs of its group available at its run R are
+    ``matched[order[lo[r]:hi[r]]]``.
     """
-    group = bucket_group(T)
-    if rows is None:
-        rows = np.arange(len(T["sid"]))
-    matched = np.flatnonzero(T["oi"] >= 0)
     # 2*valid (+1 for lead 0): a lead-0 pair (run == valid) sorts after the other pairs
     # valid at the same minute, so "<= 2R" keeps pairs with valid <= R and run < R.
     keys = (group[matched] << 33) | (
         2 * T["valid"][matched].astype(np.int64) + (T["lead"][matched] == 0)
     )
-    order = np.argsort(keys)
+    order = np.argsort(keys, kind="stable")
     keys = keys[order]
-    matched = matched[order]
-    del order
     n_q = len(rows)
     hi = np.empty(n_q, dtype=np.int32)  # positions < 2**31 (pairs per model)
     lo = np.empty(n_q, dtype=np.int32)
@@ -95,44 +121,83 @@ def corrections(
         lo[a : a + CHUNK] = np.searchsorted(
             keys, base | (run2 - 2 * WINDOW_DAYS * 1440 + 1), side="right"
         )
-    del keys, group
+    return order, hi, lo
+
+
+def _window_sums(
+    e: np.ndarray, order: np.ndarray, hi: np.ndarray, lo: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """(error sum, pair count) over each query's window; ``e`` aligned with matched."""
+    e = e[order]
+    fin = np.isfinite(e)
+    cs = np.zeros(len(e) + 1, dtype=np.int64)
+    np.cumsum(np.rint(np.where(fin, e, 0).astype(np.float64) * ERR_SCALE), out=cs[1:])
+    cn = np.zeros(len(e) + 1, dtype=np.int32)
+    np.cumsum(fin, out=cn[1:])
+    del e, fin
+    S = np.empty(len(hi), dtype=np.float64)
+    n = np.empty(len(hi), dtype=np.int32)
+    for a in range(0, len(hi), CHUNK):
+        h, lw = hi[a : a + CHUNK], lo[a : a + CHUNK]
+        S[a : a + CHUNK] = (cs[h] - cs[lw]) / float(ERR_SCALE)
+        n[a : a + CHUNK] = cn[h] - cn[lw]
+    return S, n
+
+
+def shrunk_mean(S: np.ndarray, n: np.ndarray, k: float, prior: np.ndarray | float = 0.0):
+    """Pseudo-count shrinkage: ``(S + k * prior) / (n + k)``."""
+    return (S + k * prior) / (n + k)
+
+
+def corrections(
+    T: Table,
+    obs: Table,
+    variables: tuple[str, ...] = CORRECTED_VARS,
+    rows: np.ndarray | None = None,
+    region: np.ndarray | None = None,
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """var -> (error to subtract, cell pair count) for ``rows`` of T (default: all).
+
+    ``region`` maps sid -> region index (-1 unknown) for the region prior; None
+    pools all stations into one global prior. The correction is NaN where no
+    pair is available at any level.
+    """
+    if rows is None:
+        rows = np.arange(len(T["sid"]))
+    matched = np.flatnonzero(T["oi"] >= 0)
+    levels = []
+    for group in (bucket_group(T), T["sid"].astype(np.int64), region_group(T, region)):
+        levels.append(_windows(T, group, matched, rows))
+        del group
     out = {}
     for var in variables:
         e = errors_at(T, obs, var, matched)
-        fin = np.isfinite(e)
-        cs = np.zeros(len(e) + 1, dtype=np.int64)
-        np.cumsum(np.rint(np.where(fin, e, 0).astype(np.float64) * ERR_SCALE), out=cs[1:])
-        cn = np.zeros(len(e) + 1, dtype=np.int32)
-        np.cumsum(fin, out=cn[1:])
-        del e, fin
-        mean = np.empty(n_q, dtype=np.float32)
-        count = np.empty(n_q, dtype=np.int32)
-        for a in range(0, n_q, CHUNK):
-            h, lw = hi[a : a + CHUNK], lo[a : a + CHUNK]
-            n = cn[h] - cn[lw]
-            with np.errstate(invalid="ignore", divide="ignore"):
-                m = (cs[h] - cs[lw]) / (n * float(ERR_SCALE))
-            m[n < MIN_PAIRS] = np.nan
-            mean[a : a + CHUNK] = m
-            count[a : a + CHUNK] = n
-        out[var] = (mean, count)
+        (S_c, n_c), (S_s, n_s), (S_r, n_r) = (_window_sums(e, *lev) for lev in levels)
+        del e
+        b = shrunk_mean(S_r, n_r, K_REGION)
+        b = shrunk_mean(S_s, n_s, K_STATION, b)
+        b = shrunk_mean(S_c, n_c, K_CELL, b)
+        b[(n_s == 0) & (n_r == 0)] = np.nan  # nothing known at all (cell is in station)
+        out[var] = (b.astype(np.float32), n_c)
     return out
 
 
-def correction(T: Table, obs: Table, var: str) -> tuple[np.ndarray, np.ndarray]:
-    """(mean error to subtract, pair count) for every row of T, one variable."""
-    return corrections(T, obs, (var,))[var]
+def correction(
+    T: Table, obs: Table, var: str, region: np.ndarray | None = None
+) -> tuple[np.ndarray, np.ndarray]:
+    """(error to subtract, cell pair count) for every row of T, one variable."""
+    return corrections(T, obs, (var,), region=region)[var]
 
 
 def corrected_table(
-    T: Table, obs: Table, rows: np.ndarray | None = None
+    T: Table, obs: Table, rows: np.ndarray | None = None, region: np.ndarray | None = None
 ) -> tuple[Table, dict[str, float]]:
     """Bias-corrected copy of raw table T, restricted to ``rows`` if given.
 
     Columns that are not corrected (keys, wdir, oi) are shared with T when
     ``rows`` is None, else they are (new) subsets.
     """
-    corr = corrections(T, obs, CORRECTED_VARS, rows)
+    corr = corrections(T, obs, CORRECTED_VARS, rows, region)
     out = {k: (v if rows is None else v[rows]) for k, v in T.items() if k not in corr}
     applied: dict[str, float] = {}
     for var in CORRECTED_VARS:
@@ -145,6 +210,9 @@ def corrected_table(
         out[var] = v.astype(np.float32)
         finite = np.isfinite(raw)
         applied[var] = float(has[finite].mean()) if finite.any() else 0.0
+    if "t" in out and "td" in out:
+        # dew point cannot exceed temperature; NaN t leaves td unchanged
+        out["td"] = np.fmin(out["td"], out["t"])
     return out, applied
 
 
@@ -270,11 +338,14 @@ def build_models(
     keep_from: int | None = None,
     on_table: Callable[[str, Table], None] | None = None,
     trim_from: int | None = None,
+    region: np.ndarray | None = None,
 ) -> tuple[dict[str, Table], dict]:
     """Raw tables -> all models (raw, *_bc, blend). Raw tables must have ``oi``.
 
-    Corrections are learned from all raw pairs. Corrected tables (and the blend)
-    are produced for rows with ``valid > keep_from`` (all rows if None).
+    Corrections are learned from all raw pairs; ``region`` (sid -> region index,
+    e.g. ``Dataset.region``) enables the regional prior, else it is global.
+    Corrected tables (and the blend) are produced for rows with
+    ``valid > keep_from`` (all rows if None).
 
     Memory-saving hooks for big archives: ``on_table(model, table)`` is called
     once per model with its complete table (e.g. to accumulate scores); after
@@ -298,7 +369,9 @@ def build_models(
     for m in list(raw):
         T = raw.pop(m)
         if m in ("ecmwf", "gfs"):
-            tables[f"{m}_bc"], info[f"{m}_bc"] = corrected_table(T, obs, rows_after(T, keep_from))
+            tables[f"{m}_bc"], info[f"{m}_bc"] = corrected_table(
+                T, obs, rows_after(T, keep_from), region
+            )
         tables[m] = done(m, T)
         del T
     bl = blend_table(tables.get("ecmwf_bc"), tables.get("gfs_bc"))

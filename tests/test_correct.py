@@ -16,13 +16,14 @@ def synth(tmp_path_factory):
     return info
 
 
-def _tables(info, mutate_obs=None):
+def _tables(info, mutate_obs=None, use_region=False):
     ds = verify.load(info.data_dir, info.now)
     if mutate_obs is not None:
         mutate_obs(ds.obs)
     for T in ds.fc.values():
         verify.match_table(T, ds.obs)
-    tables, _ = correct.build_models(ds.fc, ds.obs)
+    region = ds.region if use_region else None
+    tables, _ = correct.build_models(ds.fc, ds.obs, region=region)
     return ds, tables
 
 
@@ -34,14 +35,16 @@ def test_correction_reduces_error(synth, tmp_path):
             raw, bc = g[m][v]["all"], g[f"{m}_bc"][v]["all"]
             assert bc["n"] == raw["n"]
             assert bc["rmse"] < raw["rmse"], (m, v)
-            assert abs(bc["bias"]) < 0.15, (m, v)
+            # capping td at t only removes positive td errors: allow a little more
+            assert abs(bc["bias"]) < (0.25 if v == "td" else 0.15), (m, v)
         assert g[f"{m}_bc"]["wdir"] == g[m]["wdir"]  # direction is not corrected
     assert g["blend"]["t"]["all"]["rmse"] < min(g["ecmwf_bc"]["t"]["all"]["rmse"], 1e9)
 
 
-def test_no_look_ahead(synth):
+@pytest.mark.parametrize("use_region", [False, True])
+def test_no_look_ahead(synth, use_region):
     """Corrections for run R must not change when pairs with valid > R change."""
-    ds0, t0 = _tables(synth)
+    ds0, t0 = _tables(synth, use_region=use_region)
     R = sorted(set(t0["ecmwf"]["run"].tolist()))[len(set(t0["ecmwf"]["run"].tolist())) // 2]
 
     def poison(obs):
@@ -49,7 +52,7 @@ def test_no_look_ahead(synth):
         for v in ("t", "td", "wspd", "gust", "slp"):
             obs[v][late] += np.float32(7.0)
 
-    ds1, t1 = _tables(synth, poison)
+    ds1, t1 = _tables(synth, poison, use_region)
     for m in ("ecmwf_bc", "gfs_bc", "blend"):
         a, b = t0[m], t1[m]
         upto = a["run"] <= R
@@ -87,14 +90,105 @@ def synth_start():
     return START
 
 
-def test_window_min_pairs_and_strictly_earlier_runs():
+def _expected_single_station(errors: list[float]) -> float:
+    """Three-level estimate when cell, station and region hold the same pairs."""
+    S, n = float(np.sum(errors)), len(errors)
+    b = S / (n + correct.K_REGION)
+    b = (S + correct.K_STATION * b) / (n + correct.K_STATION)
+    return (S + correct.K_CELL * b) / (n + correct.K_CELL)
+
+
+def test_window_and_strictly_earlier_runs():
     T, obs = _single_station_table(30)
     corr, n = correct.correction(T, obs, "t")
     # run k sees errors of runs j < k (its own lead-0 pair is not available) within 14 days
-    assert n[:9].tolist() == list(range(9))
-    assert np.isnan(corr[:8]).all()  # fewer than 8 pairs -> no correction
-    assert corr[8] == pytest.approx(np.mean(range(8)))
-    assert n[20] == 13 and corr[20] == pytest.approx(np.mean(range(7, 20)))
+    assert n[:14].tolist() == list(range(14))
+    assert np.isnan(corr[0])  # nothing known at all -> no correction
+    for k in (1, 2, 8, 13):
+        assert corr[k] == pytest.approx(_expected_single_station(list(range(k))), rel=1e-5)
+    assert n[20] == 13
+    assert corr[20] == pytest.approx(_expected_single_station(list(range(7, 20))), rel=1e-5)
+
+
+def test_shrinkage_small_n():
+    """Few pairs move the correction only a little; many pairs give the plain mean."""
+    n_runs = 60
+    T, obs = _single_station_table(n_runs)
+    T["t"] = np.full(n_runs, 13.0, np.float32)  # constant +3 error
+    corr, n = correct.correction(T, obs, "t")
+    # one pair: well below the observed error, and growing monotonically with n
+    assert 0 < corr[1] < 0.5 * 3.0
+    assert (np.diff(corr[1:14]) > 0).all()
+    # window full (13-14 pairs): most of the way to the mean
+    assert corr[20] == pytest.approx(_expected_single_station([3.0] * 13), rel=1e-5)
+    assert corr[20] > 0.6 * 3.0
+    # one wild first pair (a gust-spike-like outlier) yields only a fraction of it, even
+    # here where the "region" is this one station (in reality it holds many)
+    T["t"][0] = 40.0
+    corr2, _ = correct.correction(T, obs, "t")
+    assert corr2[1] == pytest.approx(_expected_single_station([30.0]), rel=1e-5)
+    assert corr2[1] < 30.0 / 3
+
+
+def _two_level_table():
+    """Stations 0, 1 (region 0) and 2 (region 1); daily runs, leads 0 and 60 h.
+
+    Station 0 verifies only at lead 0 (error +2), station 2 at lead 0 (error -4),
+    station 1 never verifies. Leads 60 h are never matched.
+    """
+    day = 1440
+    base = verify.to_minutes(synth_start())
+    rows = []
+    for k in range(10):
+        for s in (0, 1, 2):
+            for lead in (0, 60):
+                rows.append((s, base + k * day, lead))
+    sid, run, lead = (np.array(x) for x in zip(*rows, strict=True))
+    n = len(sid)
+    valid = run + lead * 60
+    T = {
+        "sid": sid.astype(np.int32),
+        "run": run.astype(np.int32),
+        "lead": lead.astype(np.int16),
+        "valid": valid.astype(np.int32),
+        "t": np.where(sid == 0, 12.0, np.where(sid == 2, 6.0, 10.0)).astype(np.float32),
+        "oi": np.where((lead == 0) & (sid != 1), np.arange(n), -1).astype(np.int32),
+    }
+    for v in ("td", "wspd", "gust", "wdir", "mslp"):
+        T[v] = np.full(n, np.nan, np.float32)
+    obs = {v: np.full(n, np.nan, np.float32) for v in verify.OBS_VARS}
+    obs["t"] = np.full(n, 10.0, np.float32)
+    return T, obs
+
+
+def test_fallback_station_then_region():
+    T, obs = _two_level_table()
+    region = np.array([0, 0, 1], np.int8)
+    corr, n = correct.correction(T, obs, "t", region=region)
+    last = T["run"] == T["run"].max()  # 9 earlier runs verified
+    k0 = (T["sid"] == 0) & last
+    # station 0, lead 0: own cell (9 pairs of +2) -> close to +2
+    c00 = corr[k0 & (T["lead"] == 0)][0]
+    assert n[k0 & (T["lead"] == 0)][0] == 9 and 1.5 < c00 < 2.0
+    # station 0, lead 60 h: empty cell, falls back to the station's own bias (whose
+    # regional prior for that bucket is empty, i.e. 0): 18 / (9 + K_STATION)
+    c060 = corr[k0 & (T["lead"] == 60)][0]
+    assert n[k0 & (T["lead"] == 60)][0] == 0
+    assert c060 == pytest.approx(18.0 / (9 + correct.K_STATION), rel=1e-5)
+    # station 1 (never verified): the region 0 prior for its lead/hour bucket, which
+    # only holds station 0's lead-0 pairs -> positive; nothing for lead 60 h
+    k1 = (T["sid"] == 1) & last
+    r_l0 = 18.0 / (9 + correct.K_REGION)
+    assert corr[k1 & (T["lead"] == 0)][0] == pytest.approx(r_l0, rel=1e-5)
+    assert np.isnan(corr[k1 & (T["lead"] == 60)][0])
+    # station 2 lives in another region and never leaks into region 0
+    k2 = (T["sid"] == 2) & last
+    assert corr[k2 & (T["lead"] == 0)][0] < -3.0
+    # without a region map the prior is global: station 1 sees both stations
+    g, _ = correct.correction(T, obs, "t")
+    assert g[k1 & (T["lead"] == 0)][0] == pytest.approx(
+        (18.0 - 36.0) / (18 + correct.K_REGION), rel=1e-5
+    )
 
 
 def test_corrected_values_and_clipping():
@@ -102,13 +196,20 @@ def test_corrected_values_and_clipping():
     T["wspd"] = np.full(12, 1.0, np.float32)
     obs["wspd"] = np.zeros(12, np.float32)
     T["wspd"][:] = 5.0  # +5 kt bias ...
-    T["wspd"][11] = 2.0  # ... so 2 kt corrected by -5 kt must clip to 0
+    T["wspd"][11] = 2.0  # ... so 2 kt corrected by about -4.5 kt must clip to 0
+    T["td"] = np.full(12, 11.0, np.float32)
+    obs["td"] = np.full(12, 9.0, np.float32)  # +2 td bias ...
+    T["td"][11] = 22.0  # ... and a raw td far above t must be capped at corrected t
     bc, applied = correct.corrected_table(T, obs)
-    assert np.isfinite(bc["t"]).all()
-    assert bc["t"][11] == pytest.approx(T["t"][11] - np.mean(range(11)))
+    assert np.isfinite(bc["t"][1:]).all() and bc["t"][0] == T["t"][0]
+    assert bc["t"][11] == pytest.approx(
+        T["t"][11] - _expected_single_station(list(range(11))), rel=1e-5
+    )
     assert bc["wspd"][11] == 0 and (bc["wspd"] >= 0).all()
+    assert bc["td"][11] == bc["t"][11]
+    assert (bc["td"] <= bc["t"]).all()
     assert bc["wdir"] is T["wdir"]
-    assert applied["t"] == pytest.approx(4 / 12)
+    assert applied["t"] == pytest.approx(11 / 12)
 
 
 def test_blend_mean_fallback_and_circular():

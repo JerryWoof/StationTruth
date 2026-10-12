@@ -120,8 +120,9 @@
   <div class="callout">Example: over the last two weeks ECMWF's afternoon (12–17 UTC) temperature at an airport in a valley was on average +1.2 °C too warm at 0–24 h lead. Today's ECMWF forecast of 18.0 °C for 15 UTC becomes 16.8 °C in <code>ecmwf_bc</code>.</div>
 
   <!-- BIAS-CORRECTION METHOD: placeholder for the lead to replace with the final description of the current method -->
-  <div class="callout placeholder" id="correction-method" data-placeholder="bias-correction-method">
-    <p><b>Method details — to be completed.</b> This paragraph will describe the current bias-correction method in full (inputs, training window, weighting and how it is kept free of look-ahead).</p>
+  <div class="callout" id="correction-method">
+    <p>For each station we estimate how far each model is typically off, using only forecasts from earlier runs over the last 14 days, never anything the forecast couldn't have known. Because a few days of data is a noisy guide, the estimate is built in layers: the typical error of all airports in the region at that lead time and time of day, then the station's own overall error, then its error for that lead time and time of day. Each layer is trusted more as its own evidence grows, and is otherwise pulled toward the broader one (shrinkage with weights n/(n+k)). Wind can't go below zero and dew point can't exceed temperature.</p>
+    <p>We chose this method by testing it against alternatives (fixed minimum sample, plain shrinkage, medians, multiplicative wind correction) out of sample on real data. It lowered the error for every model and variable we verify; the <a href="scores.html">scoreboard</a> shows whether it keeps helping.</p>
   </div>
 
   <h2 id="analysis">Phase 2: Analysis</h2>
