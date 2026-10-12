@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "stationtruth"
+version = "0.1.0"
+description = "Verify ECMWF and GFS forecasts against airport observations worldwide and learn bias corrections."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Vojtech Kraus" }]
+dependencies = [
+    "metar-parse @ git+https://github.com/JerryWoof/MetarParse@v0.1.0",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "pyarrow>=14",
+    "eccodes>=2.37",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "ruff>=0.5"]
+
+[project.scripts]
+stationtruth = "stationtruth.cli:main"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/stationtruth"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
