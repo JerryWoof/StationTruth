@@ -6,16 +6,17 @@ name: Keeper
 # own schedules too; duplicate runs are harmless (data is deduplicated).
 on:
   workflow_dispatch:
+    inputs:
+      handover:
+        description: "started by the previous keeper (skip the already-running check)"
+        type: boolean
+        default: false
   schedule:
     - cron: "15 */6 * * *"
 
 permissions:
   actions: write
   contents: read
-
-concurrency:
-  group: keeper
-  cancel-in-progress: false
 
 jobs:
   tick:
@@ -25,7 +26,19 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
     steps:
+      # The 6-hourly schedule only restarts the keeper if a handover failed.
+      # If another keeper is already running, this run exits right away
+      # (no queueing, so no cancelled runs piling up).
+      - name: Exit if a keeper is already running
+        id: guard
+        run: |
+          if [ "${{ inputs.handover }}" = "true" ]; then echo "others=0" >> "$GITHUB_OUTPUT"; exit 0; fi
+          n=$(gh run list --repo "$REPO" --workflow keeper.yml --status in_progress \
+                --json databaseId --jq "[.[] | select(.databaseId != ${{ github.run_id }})] | length")
+          echo "others=$n" >> "$GITHUB_OUTPUT"
+          [ "$n" -gt 0 ] && echo "Another keeper is running; nothing to do." || true
       - name: Dispatch collectors on the hour
+        if: steps.guard.outputs.others == '0'
         run: |
           end=$(( $(date +%s) + 330*60 ))
           last_obs="" ; last_fcst=""
@@ -42,7 +55,7 @@ jobs:
       # Retire once GitHub's own cron works: if collect-obs.yml had at least 2 scheduled
       # runs in the last 3 hours (cron keeping pace, not just one stray run), retire.
       - name: Hand over to the next keeper (unless cron works)
-        if: always()
+        if: always() && steps.guard.outputs.others == '0'
         run: |
           since=$(date -u -d '3 hours ago' +%Y-%m-%dT%H:%M:%SZ)
           n=$(gh run list --repo "$REPO" --workflow collect-obs.yml --event schedule --limit 20 \
@@ -50,5 +63,5 @@ jobs:
           if [ "${n:-0}" -ge 2 ]; then
             echo "GitHub cron is running ($n scheduled runs in 3 h); keeper retires."
           else
-            gh workflow run keeper.yml --repo "$REPO"
+            gh workflow run keeper.yml --repo "$REPO" -f handover=true
           fi
